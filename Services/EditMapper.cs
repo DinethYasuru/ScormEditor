@@ -22,13 +22,16 @@ public static class EditMapper
 {
     public sealed record AttrChange(string Name, string? OldValue, string? NewValue);
 
+    /// <summary>One edited element. Breaks are offsets in its old text where markup sits.</summary>
     public sealed record Edit(string Path, string OldHtml, string? NewHtml, string OldText, string? NewText,
-        AttrChange[]? Attrs, bool Structural, bool Lost);
+        AttrChange[]? Attrs, bool Structural, bool Lost, int[]? Breaks);
 
     /// <summary>A file the edits change. The display texts show encoded course data decoded and indented.</summary>
     public sealed record FileChange(string Path, string NewText, string OldDisplay, string NewDisplay, IReadOnlyList<string> Notes);
 
-    public sealed record Problem(string Page, string What, string Why);
+    /// <summary>An edit that is left out. Places is set when the text was found more than once, so
+    /// the user can choose to change every copy (by passing Edit in changeAll).</summary>
+    public sealed record Problem(string Page, string What, string Why, int Edit = -1, int Places = 0);
 
     public sealed record Result(IReadOnlyList<FileChange> Files, IReadOnlyList<Problem> Problems);
 
@@ -37,12 +40,14 @@ public static class EditMapper
     private static readonly Regex HtmlNearby = new(@"<[a-zA-Z/][^<>]{0,200}>|&[a-zA-Z]+;|&#\d+;", RegexOptions.None, RegexTimeout);
     private static readonly string[] SearchExtensions = [".html", ".htm", ".xhtml", ".js", ".mjs", ".json", ".xml"];
 
-    public static Result Apply(ScormPackage package, IEnumerable<Edit> edits)
+    public static Result Apply(ScormPackage package, IReadOnlyList<Edit> edits, IReadOnlySet<int>? changeAll = null)
     {
         var ws = new Workspace(package);
         var problems = new List<Problem>();
-        foreach (var e in edits)
+        for (var index = 0; index < edits.Count; index++)
         {
+            var e = edits[index];
+            var all = changeAll?.Contains(index) == true;
             if (!package.Exists(e.Path)) continue;
             if (e.Lost || e.NewHtml is null)
             {
@@ -70,8 +75,8 @@ public static class EditMapper
             // 2. Text and attribute values anywhere in the package.
             if (e.NewText is not null && e.NewText != e.OldText)
             {
-                var why = ReplaceText(ws, e.Path, e.OldText, e.NewText);
-                if (why is not null) problems.Add(new Problem(e.Path, $"Text change in {Describe(e.OldText)}", why));
+                var (why, places) = ReplaceText(ws, e.Path, e.OldText, e.NewText, e.Breaks ?? [], all);
+                if (why is not null) problems.Add(new Problem(e.Path, $"Text change in {Describe(e.OldText)}", why, index, places));
             }
             foreach (var a in e.Attrs ?? [])
             {
@@ -81,8 +86,8 @@ public static class EditMapper
                         "The element is not written in the page's HTML file (a script builds it), so only changes to existing text and values can be saved."));
                     continue;
                 }
-                var why = ReplaceValue(ws, e.Path, a.OldValue, a.NewValue);
-                if (why is not null) problems.Add(new Problem(e.Path, $"{a.Name}: {Shorten(a.OldValue)} → {Shorten(a.NewValue)}", why));
+                var (why, places) = ReplaceValue(ws, e.Path, a.OldValue, a.NewValue, all);
+                if (why is not null) problems.Add(new Problem(e.Path, $"{a.Name}: {Shorten(a.OldValue)} → {Shorten(a.NewValue)}", why, index, places));
             }
         }
         return new Result(ws.Changes(), problems);
@@ -90,48 +95,59 @@ public static class EditMapper
 
     /* ---------- text ---------- */
 
-    private static string? ReplaceText(Workspace ws, string page, string oldText, string newText)
+    private static (string? Why, int Places) ReplaceText(Workspace ws, string page, string oldText, string newText, int[] breaks, bool all)
     {
         // Narrow the change to the characters that differ; the rest of the element's text is context.
         var p = 0;
         while (p < oldText.Length && p < newText.Length && oldText[p] == newText[p]) p++;
         var s = 0;
         while (s < oldText.Length - p && s < newText.Length - p && oldText[^(s + 1)] == newText[^(s + 1)]) s++;
-        var oldCore = oldText[p..^s];
-        var newCore = newText[p..^s];
-        var left = oldText[..p].TrimStart();
-        var right = oldText[^s..].TrimEnd();
+        var coreEnd = oldText.Length - s;
+        var newCore = newText[p..(newText.Length - s)];
+        if (breaks.Any(b => b > p && b < coreEnd))
+            return ("The change runs across formatting (bold, a link or similar), which can't be matched in the course's data. Edit the parts separately, or use the Code tab.", 0);
+        var textStart = oldText.Length - oldText.TrimStart().Length;
+        var textEnd = oldText.TrimEnd().Length;
+        var places = 0;
 
         foreach (var size in new[] { int.MaxValue, 40, 16 })
         {
-            var l = left.Length > size ? left[^size..] : left;
-            var r = right.Length > size ? right[..size] : right;
-            if ((l + oldCore + r).Trim().Length < 3) continue;
+            var from = size == int.MaxValue ? textStart : Math.Max(textStart, p - size);
+            var to = size == int.MaxValue ? textEnd : Math.Min(textEnd, coreEnd + size);
+            from = Math.Min(from, p);
+            to = Math.Max(to, coreEnd);
+            if (oldText[from..to].Trim().Length < 3) continue;
             // Where the context is the element's whole text, the match must not run into other words.
-            var pattern = (l.Length == left.Length ? @"(?<![\p{L}\p{N}])" : "") + Flexible(l) + "(" + Flexible(oldCore) + ")" + Flexible(r)
-                + (r.Length == right.Length ? @"(?![\p{L}\p{N}])" : "");
+            var pattern = (from <= textStart ? @"(?<![\p{L}\p{N}])" : "")
+                + Flexible(oldText, from, p, breaks) + "(" + Flexible(oldText, p, coreEnd, breaks) + ")" + Flexible(oldText, coreEnd, to, breaks)
+                + (to >= textEnd ? @"(?![\p{L}\p{N}])" : "");
             var matches = ws.FindAll(new Regex(pattern, RegexOptions.None, RegexTimeout), page);
             if (matches.Count == 0) continue;
-            if (matches.Count > 1 && !(size == int.MaxValue && (l + oldCore + r).Trim().Length >= 12 && Mirrored(matches)))
-                return $"The text appears in {matches.Count} places in the package, so it is not clear which one to change. Edit it in the Code tab.";
+            if (matches.Count > 1 && !all && !(size == int.MaxValue && oldText[from..to].Trim().Length >= 12 && Mirrored(matches)))
+            {
+                places = matches.Count;
+                break;
+            }
             ws.Replace(matches, m => newCore, isText: true);
             if (matches.Count > 1) NoteMany(matches, "The text “" + Shorten(oldText.Trim()) + "”");
-            return null;
+            return (null, 0);
         }
-        return "This text was not found in the package's files. A script may build it from data the editor can't read; edit it in the Code tab.";
+        return places > 0
+            ? ($"The text appears in {places} places in the package, so it is not clear which one to change.", places)
+            : ("This text was not found in the package's files. A script may build it from data the editor can't read; edit it in the Code tab.", 0);
     }
 
-    private static string? ReplaceValue(Workspace ws, string page, string oldValue, string newValue)
+    private static (string? Why, int Places) ReplaceValue(Workspace ws, string page, string oldValue, string newValue, bool all)
     {
-        if (oldValue.Trim().Length < 4) return "The old value is too short to find safely. Edit it in the Code tab.";
-        var pattern = @"(?<![\w/.\-])(" + Flexible(oldValue) + @")(?![\w/.\-])";
+        if (oldValue.Trim().Length < 4) return ("The old value is too short to find safely. Edit it in the Code tab.", 0);
+        var pattern = @"(?<![\w/.\-])(" + Flexible(oldValue, 0, oldValue.Length, []) + @")(?![\w/.\-])";
         var matches = ws.FindAll(new Regex(pattern, RegexOptions.None, RegexTimeout), page);
-        if (matches.Count == 0) return "This value was not found in the package's files. Edit it in the Code tab.";
-        if (matches.Count > 1 && (oldValue.Length < 12 || !Mirrored(matches)))
-            return $"The value appears in {matches.Count} places, so it is not clear which one to change. Edit it in the Code tab.";
+        if (matches.Count == 0) return ("This value was not found in the package's files. Edit it in the Code tab.", 0);
+        if (matches.Count > 1 && !all && (oldValue.Length < 12 || !Mirrored(matches)))
+            return ($"The value appears in {matches.Count} places, so it is not clear which one to change.", matches.Count);
         ws.Replace(matches, m => newValue, isText: false);
         if (matches.Count > 1) NoteMany(matches, "The value “" + Shorten(oldValue) + "”");
-        return null;
+        return (null, 0);
     }
 
     // Several matches are copies of one value (a course title in the page's data, its <title> and
@@ -149,15 +165,20 @@ public static class EditMapper
 
     // A pattern for text as it may be written in a file: in HTML (entities), in JavaScript or JSON
     // strings (backslash escapes), with any run of whitespace written in any of those ways.
-    private static string Flexible(string text)
+    // Markup that may sit between parts of the text in the source: tags, written plainly or
+    // escaped in a JavaScript string.
+    private const string TagGap = @"(?:<[^<>]{0,300}>|\\u003[cC](?:(?!\\u003[eE]).){0,300}\\u003[eE])*";
+
+    private static string Flexible(string text, int from, int to, int[] breaks)
     {
         var sb = new StringBuilder();
-        for (var i = 0; i < text.Length; i++)
+        for (var i = from; i < to; i++)
         {
+            if (i > from && Array.IndexOf(breaks, i) >= 0) sb.Append(TagGap);
             var c = text[i];
             if (char.IsWhiteSpace(c))
             {
-                while (i + 1 < text.Length && char.IsWhiteSpace(text[i + 1])) i++;
+                while (i + 1 < to && char.IsWhiteSpace(text[i + 1]) && Array.IndexOf(breaks, i + 1) < 0) i++;
                 sb.Append(@"(?:\s|&nbsp;|&#160;|&#[xX][aA]0;|\\u00[aA]0|\\[ntr]| )+");
                 continue;
             }
