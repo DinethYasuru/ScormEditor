@@ -116,11 +116,23 @@ public sealed class ScormPackage
 
     public byte[]? Read(string path) { lock (_gate) return _files.TryGetValue(path, out var b) ? b : null; }
 
-    public string ReadText(string path)
+    public string ReadText(string path) => DecodeText(Read(path) ?? []);
+
+    /// <summary>The file as it was in the opened package, or null for a file added since.</summary>
+    public string? ReadOriginalText(string path)
     {
-        var b = Read(path) ?? [];
-        return Encoding.UTF8.GetString(b.AsSpan(HasBom(b) ? 3 : 0));
+        byte[]? b;
+        lock (_gate) b = _original.TryGetValue(path, out var o) ? o : null;
+        return b is null ? null : DecodeText(b);
     }
+
+    /// <summary>Paths that differ from the opened package: changed, added or deleted.</summary>
+    public IReadOnlyList<string> ChangedPaths
+    {
+        get { lock (_gate) return _dirty.Order(StringComparer.Ordinal).ToList(); }
+    }
+
+    private static string DecodeText(byte[] b) => Encoding.UTF8.GetString(b.AsSpan(HasBom(b) ? 3 : 0));
 
     public void Write(string path, byte[] data)
     {

@@ -7,7 +7,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<ScormPackageStore>();
 
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    // Edited pages are sent to the server for review; a large course page can exceed the 32 KB default.
+    .AddHubOptions(o => o.MaximumReceiveMessageSize = 64 * 1024 * 1024);
 
 var app = builder.Build();
 

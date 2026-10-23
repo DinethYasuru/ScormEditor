@@ -15,7 +15,9 @@
                 <span class="badge text-bg-primary">@(Package.Manifest?.Version ?? "No manifest")</span>
                 @if (Package.ChangeCount > 0)
                 {
-                    <span class="badge text-bg-warning">@Package.ChangeCount @(Package.ChangeCount == 1 ? "change" : "changes")</span>
+                    <button type="button" class="badge text-bg-warning border-0" title="See every change since the package was opened" @onclick="ReviewPackage">
+                        @Package.ChangeCount @(Package.ChangeCount == 1 ? "changed file" : "changed files")
+                    </button>
                 }
             }
         </div>
@@ -27,9 +29,9 @@
             <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="LoadSample">Load sample</button>
             @if (Package is not null)
             {
-                <a class="btn btn-sm btn-primary" href="@($"scorm-export/{Package.Id}")" download @onclick="FlushEdits">
+                <button type="button" class="btn btn-sm btn-primary" @onclick="Export">
                     <span class="oi oi-data-transfer-download me-1" aria-hidden="true"></span>Export .zip
-                </a>
+                </button>
             }
         </div>
     </div>
@@ -42,10 +44,25 @@
         </div>
     }
 
-    <div class="se-grid">
-        @* Package: course structure, manifest facts and the file tree *@
-        <section class="se-pane se-side" aria-label="Package">
-            <div class="se-pane-header">Course structure</div>
+    <div class="se-grid @(sideOpen ? null : "side-closed")">
+        @* Package: course structure, manifest facts and the file tree. It folds into a thin rail to
+           give the editor the full width. *@
+        @if (!sideOpen)
+        {
+            <nav class="se-pane se-rail" aria-label="Package">
+                <button type="button" class="btn btn-sm btn-link" title="Show course structure and files" aria-label="Show course structure and files" @onclick="ToggleSide">
+                    <span class="oi oi-chevron-right" aria-hidden="true"></span>
+                </button>
+                <span class="se-rail-label">Course structure</span>
+            </nav>
+        }
+        <section class="se-pane se-side" aria-label="Package" hidden="@(!sideOpen)">
+            <div class="se-pane-header">
+                <span class="flex-grow-1">Course structure</span>
+                <button type="button" class="btn btn-sm btn-link p-0" title="Hide this pane to make the editor wider" aria-label="Hide course structure" @onclick="ToggleSide">
+                    <span class="oi oi-chevron-left" aria-hidden="true"></span>
+                </button>
+            </div>
             <div class="se-pane-body">
                 @if (Package?.Manifest is null)
                 {
@@ -144,7 +161,7 @@
 
             <div class="se-panel" role="tabpanel" aria-label="Preview" hidden="@(tab != Tab.Preview)">
                 <div class="se-preview-tools">
-                <select class="form-select form-select-sm se-addr" aria-label="Page to preview" value="@previewPath" @onchange="e => SetPreview(e.Value?.ToString())">
+                <select class="form-select form-select-sm se-addr" aria-label="Page to preview" value="@previewPath" @onchange="e => PickPreview(e.Value?.ToString())">
                     @if (Package is not null)
                     {
                         @foreach (var p in Package.Paths.Where(ScormPackage.IsHtml))
@@ -162,7 +179,7 @@
                 </div>
                 <div class="btn-group btn-group-sm" role="group" aria-label="Preview mode">
                     <button type="button" class="btn @(previewMode == PreviewMode.Edit ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetMode(PreviewMode.Edit)"
-                            title="Click any text in the page and type; double-click an image to replace it">
+                            title="Click any text in the page and type; right-click links, embeds and images to edit them">
                         <span class="oi oi-pencil me-1" aria-hidden="true"></span>Edit
                     </button>
                     <button type="button" class="btn @(previewMode == PreviewMode.Interact ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetMode(PreviewMode.Interact)"
@@ -190,21 +207,22 @@
                         <button type="button" class="btn btn-light" title="Redo (Ctrl+Y)" @onclick='() => Exec("redo")' @onmousedown:preventDefault><span class="oi oi-action-redo"></span></button>
                     </div>
                     <span class="flex-grow-1 se-edit-status">
-                        @(editState switch
+                        @if (draftPaths.Length > 0)
                         {
-                            "saving" => "Saving…",
-                            "saved" => $"All changes saved to {string.Join(", ", savedPaths)}",
-                            "unsaved" => "Unsaved changes. Live is off, so press Save (or Ctrl+S).",
-                            _ => "Click any text and type. Double-click an image to replace it. Switch to Interact to click through the course."
-                        })
+                            <strong>Unsaved changes</strong>
+                            @($" on {string.Join(", ", draftPaths)}. Review them to save.")
+                        }
+                        else
+                        {
+                            @("Click text and type. Right-click a link, embed or image to edit it. Switch to Interact to click through the course.")
+                        }
                     </span>
-                    @if (savedPaths.Count > 0 || editState is "saving" or "saved")
+                    @if (draftPaths.Length > 0)
                     {
-                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="UndoAllEdits">Undo all changes</button>
-                    }
-                    @if (!live)
-                    {
-                        <button type="button" class="btn btn-sm btn-primary" @onclick="SaveEdits" disabled="@(editState != "unsaved")">Save</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="DiscardDrafts">Discard</button>
+                        <button type="button" class="btn btn-sm btn-primary" title="See what changed, then save (Ctrl+S)" @onclick="() => ReviewDrafts(null)">
+                            <span class="oi oi-check me-1" aria-hidden="true"></span>Review and save
+                        </button>
                     }
                 </div>
             }
@@ -243,6 +261,96 @@
             </div>
         </section>
     </div>
+
+    @if (review is not null)
+    {
+        <div class="se-review-backdrop">
+            <div class="se-review" role="dialog" aria-modal="true" aria-labelledby="se-review-title">
+                <div class="se-review-head">
+                    <h5 id="se-review-title" class="mb-0">@(review.Drafts ? "Review changes before saving" : "Changes since the package was opened")</h5>
+                    @if (review.Files.Count > 0)
+                    {
+                        <span class="text-muted small">
+                            @review.Files.Count @(review.Files.Count == 1 ? "file" : "files") ·
+                            <span class="se-plus">+@review.Files.Sum(f => f.Diff?.Added ?? 0)</span>
+                            <span class="se-minus">−@review.Files.Sum(f => f.Diff?.Removed ?? 0)</span> lines
+                        </span>
+                    }
+                </div>
+                @if (review.Note is not null)
+                {
+                    <div class="alert alert-info py-2 px-3 mb-0 rounded-0 small">@review.Note</div>
+                }
+                <div class="se-review-body">
+                    @if (review.Files.Count == 0)
+                    {
+                        <p class="text-muted p-3 mb-0">@(review.Drafts ? "The edits cancel out, so there is nothing to save." : "Nothing has changed yet.")</p>
+                    }
+                    @foreach (var f in review.Files)
+                    {
+                        <section class="se-diff-file">
+                            <header>
+                                <span class="se-diff-path">@f.Path</span>
+                                <span class="small text-muted">
+                                    @f.Label
+                                    @if (f.Diff is { TooLarge: false } d)
+                                    {
+                                        <span class="se-plus ms-2">+@d.Added</span>
+                                        <span class="se-minus ms-1">−@d.Removed</span>
+                                    }
+                                </span>
+                            </header>
+                            @if (f.Warning is not null)
+                            {
+                                <div class="alert alert-warning py-1 px-2 m-2 small">@f.Warning</div>
+                            }
+                            @if (f.Diff is { TooLarge: true })
+                            {
+                                <p class="small text-muted px-2 py-1 mb-0">The change is too large to show line by line.</p>
+                            }
+                            else if (f.Diff is not null)
+                            {
+                                <table class="se-diff">
+                                    @foreach (var (hunk, h) in f.Diff.Hunks.Select((x, i) => (x, i)))
+                                    {
+                                        @if (h > 0)
+                                        {
+                                            <tr class="se-diff-gap"><td colspan="3">⋯</td></tr>
+                                        }
+                                        @foreach (var line in hunk.Lines)
+                                        {
+                                            <tr class="se-diff-@line.Kind.ToString().ToLowerInvariant()">
+                                                <td class="se-ln">@line.OldNumber</td>
+                                                <td class="se-ln">@line.NewNumber</td>
+                                                <td class="se-code"><span class="se-sign">@(line.Kind switch { TextDiff.Kind.Added => "+", TextDiff.Kind.Removed => "−", _ => " " })</span>@foreach (var seg in line.Segments)
+                                                    {
+                                                        if (seg.Changed) { <mark>@seg.Text</mark> } else { @seg.Text }
+                                                    }</td>
+                                            </tr>
+                                        }
+                                    }
+                                </table>
+                            }
+                        </section>
+                    }
+                </div>
+                <div class="se-review-foot">
+                    @if (review.Drafts)
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-danger me-auto" @onclick="DiscardDrafts">Discard changes</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CloseReview">Keep editing</button>
+                        <button type="button" class="btn btn-sm btn-primary" @onclick="SaveDrafts" disabled="@(review.Files.Count == 0)">
+                            <span class="oi oi-check me-1" aria-hidden="true"></span>Save changes
+                        </button>
+                    }
+                    else
+                    {
+                        <button type="button" class="btn btn-sm btn-primary" @onclick="CloseReview">Close</button>
+                    }
+                </div>
+            </div>
+        </div>
+    }
 </div>
 
 @code {
@@ -258,12 +366,13 @@
     private bool live = true, loading, confirmDelete;
     private enum PreviewMode { Edit, Interact }
     private PreviewMode previewMode = PreviewMode.Edit;
-    private string editState = "";
+    private string[] draftPaths = [];
+    private bool sideOpen = true;
+    private Review? review;
     private int? frameWidth;
     private enum Tab { Preview, Code }
     private Tab tab = Tab.Preview;
     private bool refreshEditor;
-    private readonly SortedSet<string> savedPaths = new(StringComparer.Ordinal);
     private int version;
     private readonly HashSet<string> collapsed = [];
 
@@ -291,8 +400,8 @@
         Package = package;
         Store.Add(package);
         package.Changed += OnPackageChanged;
-        editState = "";
-        savedPaths.Clear();
+        draftPaths = [];
+        review = null;
         currentPath = null;
         tab = Tab.Preview;
         collapsed.Clear();
@@ -328,8 +437,10 @@
             await upload.CopyToAsync(ms);
             ms.Position = 0;
             var package = ScormPackage.FromZip(e.File.Name, ms);
+            if (draftPaths.Length > 0)
+                Show($"Unsaved preview changes on {string.Join(", ", draftPaths)} were dropped when {e.File.Name} was opened.", "warning");
             await OpenPackage(package);
-            Show(package.ManifestPath.Length == 0
+            if (status is null || statusKind != "warning") Show(package.ManifestPath.Length == 0
                 ? $"Opened {e.File.Name}, but it has no imsmanifest.xml, so it is not a SCORM package yet."
                 : $"Opened {e.File.Name} ({package.Paths.Count} files).", package.ManifestPath.Length == 0 ? "warning" : "success");
         }
@@ -347,7 +458,7 @@
         }
     }
 
-    private Task LoadSample() => OpenPackage(SamplePackage.Create());
+    private Task LoadSample() => AfterDrafts(() => OpenPackage(SamplePackage.Create()));
 
     private async Task OpenFile(string? path)
     {
@@ -359,7 +470,7 @@
             await module!.InvokeVoidAsync("openText", path, Package.ReadText(path), ModeOf(path), false);
         else
             await module!.InvokeVoidAsync("hideEditor");
-        if (live && ScormPackage.IsHtml(path) && path != previewPath) await SetPreview(path);
+        if (live && draftPaths.Length == 0 && ScormPackage.IsHtml(path) && path != previewPath) await SetPreview(path);
     }
 
     private async Task EditFile(string path)
@@ -368,19 +479,21 @@
         ShowTab(Tab.Code);
     }
 
-    private async Task PreviewPage(string path)
+    private Task PreviewPage(string path) => AfterDrafts(async () =>
     {
         await SetPreview(path);
         ShowTab(Tab.Preview);
-    }
+    });
 
-    private async Task OpenItem(ScormManifest.Item item)
+    private Task OpenItem(ScormManifest.Item item) => AfterDrafts(async () =>
     {
         if (item.Path is null) return;
         await OpenFile(item.Path);
         await SetPreview(item.Path);
         ShowTab(Tab.Preview);
-    }
+    });
+
+    private Task PickPreview(string? path) => AfterDrafts(() => SetPreview(path));
 
     private async Task SetPreview(string? path)
     {
@@ -388,11 +501,11 @@
         await module!.InvokeVoidAsync("loadPreview", path);
     }
 
-    private async Task ReloadPreview()
+    private Task ReloadPreview() => AfterDrafts(async () =>
     {
         await module!.InvokeVoidAsync("flush");
         await module!.InvokeVoidAsync("reloadPreview");
-    }
+    });
 
     private async Task ToggleLive(ChangeEventArgs e)
     {
@@ -400,41 +513,121 @@
         await module!.InvokeVoidAsync("setLive", live);
     }
 
-    private async Task SetMode(PreviewMode mode)
+    private Task SetMode(PreviewMode mode) => mode == previewMode ? Task.CompletedTask : AfterDrafts(async () =>
     {
         previewMode = mode;
         await module!.InvokeVoidAsync("setMode", mode == PreviewMode.Edit ? "edit" : "interact");
-    }
+    });
 
     private async Task Exec(string command) => await module!.InvokeVoidAsync("exec", command);
 
-    private async Task SaveEdits() => await module!.InvokeVoidAsync("saveEdited");
-
-    private async Task UndoAllEdits()
+    private void ToggleSide()
     {
-        var restored = await module!.InvokeAsync<string[]>("undoAllEdits");
-        savedPaths.Clear();
-        editState = "";
-        if (Package is not null && currentPath is not null && restored.Contains(currentPath))
-            await module!.InvokeVoidAsync("openText", currentPath, Package.ReadText(currentPath), ModeOf(currentPath), true);
-        Show(restored.Length == 0 ? "There were no saved preview edits to undo." : $"Restored {string.Join(", ", restored)}.", "info");
+        sideOpen = !sideOpen;
+        refreshEditor = true;
     }
+
+    private Task Export() => AfterDrafts(async () =>
+    {
+        await module!.InvokeVoidAsync("flush");
+        await module!.InvokeVoidAsync("download", $"scorm-export/{Package!.Id}");
+    });
 
     [JSInvokable]
     public Task OnPreviewNavigated(string path) => InvokeAsync(() => { previewPath = path; StateHasChanged(); });
 
     [JSInvokable]
-    public Task OnEditState(string state, string[] paths) => InvokeAsync(() =>
-    {
-        editState = state;
-        foreach (var p in paths) savedPaths.Add(p);
-        StateHasChanged();
-    });
+    public Task OnDraftsChanged(string[] paths) => InvokeAsync(() => { draftPaths = paths; StateHasChanged(); });
+
+    [JSInvokable]
+    public Task OnReviewRequested() => InvokeAsync(() => ReviewDrafts(null));
 
     [JSInvokable]
     public Task OnImageReplaced(string path) => InvokeAsync(() => Show($"Replaced image {path}.", "success"));
 
-    private async Task FlushEdits() => await module!.InvokeVoidAsync("flush");
+    /* ---------- review ---------- */
+
+    // One file in the review: the text that will be saved and its diff against what is saved now.
+    private sealed record ReviewFile(string Path, string Label, string? NewText, TextDiff.Result? Diff, string? Warning);
+
+    private sealed record Review(bool Drafts, List<ReviewFile> Files, string? Note, Func<Task>? Then);
+
+    private sealed record Draft(string Path, string Baseline, string Edited);
+
+    // Runs an action that would reload the preview. With unsaved preview edits it opens the
+    // review first, and runs the action once they are saved or discarded.
+    private async Task AfterDrafts(Func<Task> action)
+    {
+        if (draftPaths.Length == 0) { await action(); return; }
+        await ReviewDrafts(action);
+    }
+
+    private async Task ReviewDrafts(Func<Task>? then)
+    {
+        if (Package is null || module is null) return;
+        var drafts = await module.InvokeAsync<Draft[]>("getDrafts");
+        var files = new List<ReviewFile>();
+        foreach (var d in drafts)
+        {
+            if (!Package.Exists(d.Path)) continue;
+            var source = Package.ReadText(d.Path);
+            var outcome = DraftPatcher.Apply(source, d.Baseline, d.Edited);
+            if (outcome.Text == source) continue;
+            files.Add(new ReviewFile(d.Path, "edited in the preview", outcome.Text, TextDiff.Compare(source, outcome.Text),
+                outcome.Mapped ? null : "Some changes could not be matched to the page's source, so the page will be saved as the preview shows it. "
+                    + "Scripts in the page may have changed parts of it while it loaded; check those parts below before saving."));
+        }
+        review = new Review(true, files,
+            then is null ? null : "Save or discard these changes first. The preview reloads afterwards, which would lose them.", then);
+        StateHasChanged();
+    }
+
+    private void ReviewPackage()
+    {
+        if (Package is null) return;
+        var files = new List<ReviewFile>();
+        foreach (var path in Package.ChangedPaths)
+        {
+            var original = Package.ReadOriginalText(path);
+            var exists = Package.Exists(path);
+            var label = original is null && !Package.HasOriginal(path) ? "added" : !exists ? "deleted" : "changed";
+            if (!ScormPackage.IsText(path))
+            {
+                files.Add(new ReviewFile(path, label + " (binary file)", null, null, null));
+                continue;
+            }
+            files.Add(new ReviewFile(path, label, null, TextDiff.Compare(original ?? "", exists ? Package.ReadText(path) : ""), null));
+        }
+        review = new Review(false, files, draftPaths.Length > 0 ? "Unsaved preview edits are not included until you save them." : null, null);
+    }
+
+    private async Task SaveDrafts()
+    {
+        if (Package is null || review is not { Drafts: true } r) return;
+        foreach (var f in r.Files)
+        {
+            Package.WriteText(f.Path, f.NewText!);
+            await module!.InvokeVoidAsync("updateDoc", f.Path, f.NewText);
+        }
+        review = null;
+        await module!.InvokeVoidAsync("clearDrafts", r.Then is null);
+        draftPaths = [];
+        Show($"Saved {string.Join(", ", r.Files.Select(f => f.Path))}.", "success");
+        if (r.Then is not null) await r.Then();
+    }
+
+    private async Task DiscardDrafts()
+    {
+        var then = review?.Then;
+        review = null;
+        // Always reload so the preview drops the discarded edits.
+        await module!.InvokeVoidAsync("clearDrafts", true);
+        draftPaths = [];
+        Show("Discarded the unsaved preview changes.", "info");
+        if (then is not null) await then();
+    }
+
+    private void CloseReview() => review = null;
 
     private async Task Reindent() => await module!.InvokeVoidAsync("reindent");
 
