@@ -60,7 +60,7 @@
     {
         <ol class="se-tips" aria-label="How to edit">
             <li><span class="se-step">1</span>Click any text in the page and type.</li>
-            <li><span class="se-step">2</span>Right-click a link, video or image to change it.</li>
+            <li><span class="se-step">2</span>Right-click a link, button, video or image to change it. Ctrl+click to go to another page.</li>
             <li><span class="se-step">3</span>Press <strong>Review and save</strong> to check your changes.</li>
             <li><span class="se-step">4</span>Press <strong>Download course</strong> and upload it to your LMS.</li>
             <li class="ms-auto"><button type="button" class="btn btn-sm btn-link p-0" @onclick="HideTips">Hide tips</button></li>
@@ -291,7 +291,7 @@
                         }
                         else
                         {
-                            @($"Click text and type. Right-click a link, embed or image to edit it. Switch to {(advanced ? "Interact" : "Try it")} to click through the course.")
+                            @($"Click text and type. Ctrl+click a button or link to go where it leads. Right-click a link, button or image to edit it.")
                         }
                     </span>
                     @if (draftPaths.Length > 0)
