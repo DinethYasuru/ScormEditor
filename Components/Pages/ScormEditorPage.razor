@@ -1,0 +1,671 @@
+@page "/editor"
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject ScormPackageStore Store
+
+<PageTitle>SCORM Editor</PageTitle>
+
+<div class="scorm-editor">
+    <div class="se-toolbar">
+        <div class="se-title">
+            <h3 class="mb-0">@(Package?.Manifest?.CourseTitle is { Length: > 0 } t ? t : "SCORM Editor")</h3>
+            @if (Package is not null)
+            {
+                <span class="text-muted small text-truncate" title="@Package.FileName">@Package.FileName</span>
+                <span class="badge text-bg-primary">@(Package.Manifest?.Version ?? "No manifest")</span>
+                @if (Package.ChangeCount > 0)
+                {
+                    <span class="badge text-bg-warning">@Package.ChangeCount @(Package.ChangeCount == 1 ? "change" : "changes")</span>
+                }
+            }
+        </div>
+        <div class="se-actions">
+            <label class="btn btn-sm btn-outline-primary mb-0 @(loading ? "disabled" : "")">
+                <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open package…")
+                <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
+            </label>
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="LoadSample">Load sample</button>
+            @if (Package is not null)
+            {
+                <a class="btn btn-sm btn-primary" href="@($"scorm-export/{Package.Id}")" download @onclick="FlushEdits">
+                    <span class="oi oi-data-transfer-download me-1" aria-hidden="true"></span>Export .zip
+                </a>
+            }
+        </div>
+    </div>
+
+    @if (status is not null)
+    {
+        <div class="alert alert-@statusKind alert-dismissible py-2 mb-2 small" role="status">
+            @status
+            <button type="button" class="btn-close py-2" aria-label="Dismiss" @onclick="() => status = null"></button>
+        </div>
+    }
+
+    <div class="se-grid">
+        @* Package: course structure, manifest facts and the file tree *@
+        <section class="se-pane se-side" aria-label="Package">
+            <div class="se-pane-header">Course structure</div>
+            <div class="se-pane-body">
+                @if (Package?.Manifest is null)
+                {
+                    <p class="small text-muted px-2 mb-2">@(Package is null ? "Open a package to begin." : "No imsmanifest.xml in this package.")</p>
+                }
+                else if (Package.Manifest.Error is not null)
+                {
+                    <p class="small text-danger px-2 mb-2">imsmanifest.xml has an XML error. @Package.Manifest.Error</p>
+                }
+                else
+                {
+                    <ol class="se-org">
+                        @foreach (var (item, i) in Package.Manifest.Items.Select((it, i) => (it, i)))
+                        {
+                            <li>
+                                <button type="button" class="@(item.Path is not null && item.Path == previewPath ? "current" : null)"
+                                        style="padding-left: @(6 + item.Depth * 14)px" disabled="@(item.Path is null)"
+                                        title="@(item.Path is null && item.Href is not null ? $"Missing file: {item.Href}" : item.Path)"
+                                        @onclick="() => OpenItem(item)">
+                                    <span class="se-ix">@(i + 1)</span><span>@item.Title</span>
+                                </button>
+                            </li>
+                        }
+                    </ol>
+                    <dl class="se-meta">
+                        <dt>Launch</dt><dd>@(Package.Manifest.LaunchPath ?? "—")</dd>
+                        <dt>Identifier</dt><dd>@Package.Manifest.Identifier</dd>
+                        <dt>Resources</dt><dd>@Package.Manifest.Resources.Count</dd>
+                    </dl>
+                }
+
+                <div class="se-section-label">
+                    <span>Files</span>
+                    @if (Package is not null) { <span>@Package.Paths.Count</span> }
+                </div>
+                @if (Package is not null)
+                {
+                    <ul class="se-tree">@RenderFolder(TreeFor(Package.Paths), "")</ul>
+                }
+            </div>
+            @if (Package is not null)
+            {
+                <div class="se-side-footer">
+                    <form class="input-group input-group-sm" @onsubmit="AddFile" @onsubmit:preventDefault>
+                        <input class="form-control" placeholder="folder/new-page.html" aria-label="New file path" @bind="newPath" />
+                        <button class="btn btn-outline-secondary" type="submit">Add</button>
+                    </form>
+                    <div class="d-flex gap-1 flex-wrap">
+                        <label class="btn btn-sm btn-outline-secondary mb-0" title="Add files to the folder of the selected file">
+                            <span class="oi oi-cloud-upload me-1" aria-hidden="true"></span>Upload
+                            <InputFile OnChange="UploadFiles" multiple class="d-none" />
+                        </label>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="SyncManifest"
+                                title="List every package file in the launch resource of imsmanifest.xml">
+                            <span class="oi oi-list me-1" aria-hidden="true"></span>Sync manifest
+                        </button>
+                    </div>
+                    @if (currentPath is not null)
+                    {
+                        <div class="input-group input-group-sm">
+                            <input class="form-control" aria-label="Rename selected file" @bind="renamePath" />
+                            <button class="btn btn-outline-secondary" type="button" @onclick="RenameFile">Rename</button>
+                            <button class="btn btn-outline-danger" type="button" @onclick="DeleteFile">@(confirmDelete ? "Confirm" : "Delete")</button>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+
+        @* Main work area: Preview and Code tabs. Both panels stay in the DOM so the course keeps its
+           state and CodeMirror keeps its undo history while the other tab is showing. *@
+        <section class="se-pane se-main" aria-label="Editor">
+            <div class="se-tabs" role="tablist">
+                <button type="button" role="tab" class="se-tab @(tab == Tab.Preview ? "active" : null)" aria-selected="@(tab == Tab.Preview)" @onclick="() => ShowTab(Tab.Preview)">
+                    <span class="oi oi-eye me-1" aria-hidden="true"></span>Preview
+                    @if (previewPath is not null) { <span class="se-tab-file">@previewPath.Split('/')[^1]</span> }
+                </button>
+                <button type="button" role="tab" class="se-tab @(tab == Tab.Code ? "active" : null)" aria-selected="@(tab == Tab.Code)" @onclick="() => ShowTab(Tab.Code)">
+                    <span class="oi oi-code me-1" aria-hidden="true"></span>Code
+                    @if (currentPath is not null)
+                    {
+                        <span class="se-tab-file">@currentPath.Split('/')[^1]</span>
+                        @if (Package?.IsDirty(currentPath) == true) { <span class="se-dot" title="Changed"></span> }
+                    }
+                </button>
+                <div class="se-tab-tools">
+                    @if (tab == Tab.Code)
+                    {
+                        <span class="se-path text-truncate">@(currentPath ?? "—")</span>
+                        <button type="button" class="btn btn-sm btn-link" @onclick="Reindent" disabled="@(currentPath is null || !ScormPackage.IsText(currentPath))">Re-indent</button>
+                        <button type="button" class="btn btn-sm btn-link" @onclick="RevertFile"
+                                disabled="@(currentPath is null || Package is null || !Package.HasOriginal(currentPath) || !Package.IsDirty(currentPath))">Revert file</button>
+                    }
+                </div>
+            </div>
+
+            <div class="se-panel" role="tabpanel" aria-label="Preview" hidden="@(tab != Tab.Preview)">
+                <div class="se-preview-tools">
+                <select class="form-select form-select-sm se-addr" aria-label="Page to preview" value="@previewPath" @onchange="e => SetPreview(e.Value?.ToString())">
+                    @if (Package is not null)
+                    {
+                        @foreach (var p in Package.Paths.Where(ScormPackage.IsHtml))
+                        {
+                            <option value="@p">@p@(p == Package.Manifest?.LaunchPath ? "  (launch)" : "")</option>
+                        }
+                    }
+                </select>
+                <button type="button" class="btn btn-sm btn-outline-secondary" title="Reload preview" @onclick="ReloadPreview"><span class="oi oi-reload"></span></button>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Preview width">
+                    @foreach (var (label, w) in Widths)
+                    {
+                        <button type="button" class="btn @(frameWidth == w ? "btn-secondary" : "btn-outline-secondary")" @onclick="() => frameWidth = w">@label</button>
+                    }
+                </div>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Preview mode">
+                    <button type="button" class="btn @(previewMode == PreviewMode.Edit ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetMode(PreviewMode.Edit)"
+                            title="Click any text in the page and type; double-click an image to replace it">
+                        <span class="oi oi-pencil me-1" aria-hidden="true"></span>Edit
+                    </button>
+                    <button type="button" class="btn @(previewMode == PreviewMode.Interact ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetMode(PreviewMode.Interact)"
+                            title="Use the course as a learner: links, buttons and quizzes work">
+                        <span class="oi oi-media-play me-1" aria-hidden="true"></span>Interact
+                    </button>
+                </div>
+                <div class="form-check form-switch mb-0 small">
+                    <input class="form-check-input" type="checkbox" id="se-live" checked="@live" @onchange="ToggleLive" />
+                    <label class="form-check-label" for="se-live">Live</label>
+                </div>
+                </div>
+            @if (previewMode == PreviewMode.Edit)
+            {
+                <div class="se-editbar">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Formatting">
+                        <button type="button" class="btn btn-light" title="Bold (Ctrl+B)" @onclick='() => Exec("bold")' @onmousedown:preventDefault><b>B</b></button>
+                        <button type="button" class="btn btn-light" title="Italic (Ctrl+I)" @onclick='() => Exec("italic")' @onmousedown:preventDefault><i>I</i></button>
+                        <button type="button" class="btn btn-light" title="Underline (Ctrl+U)" @onclick='() => Exec("underline")' @onmousedown:preventDefault><u>U</u></button>
+                        <button type="button" class="btn btn-light" title="Make a link" @onclick='() => Exec("createLink")' @onmousedown:preventDefault><span class="oi oi-link-intact"></span></button>
+                        <button type="button" class="btn btn-light" title="Remove formatting" @onclick='() => Exec("removeFormat")' @onmousedown:preventDefault><span class="oi oi-ban"></span></button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="History">
+                        <button type="button" class="btn btn-light" title="Undo (Ctrl+Z)" @onclick='() => Exec("undo")' @onmousedown:preventDefault><span class="oi oi-action-undo"></span></button>
+                        <button type="button" class="btn btn-light" title="Redo (Ctrl+Y)" @onclick='() => Exec("redo")' @onmousedown:preventDefault><span class="oi oi-action-redo"></span></button>
+                    </div>
+                    <span class="flex-grow-1 se-edit-status">
+                        @(editState switch
+                        {
+                            "saving" => "Saving…",
+                            "saved" => $"All changes saved to {string.Join(", ", savedPaths)}",
+                            "unsaved" => "Unsaved changes. Live is off, so press Save (or Ctrl+S).",
+                            _ => "Click any text and type. Double-click an image to replace it. Switch to Interact to click through the course."
+                        })
+                    </span>
+                    @if (savedPaths.Count > 0 || editState is "saving" or "saved")
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="UndoAllEdits">Undo all changes</button>
+                    }
+                    @if (!live)
+                    {
+                        <button type="button" class="btn btn-sm btn-primary" @onclick="SaveEdits" disabled="@(editState != "unsaved")">Save</button>
+                    }
+                </div>
+            }
+            <div class="se-stage @(frameWidth is null ? "" : "narrow")">
+                <iframe @ref="frame" title="Course preview" style="@(frameWidth is null ? "" : $"width:{frameWidth}px")"></iframe>
+            </div>
+            <div class="se-lms" @ref="lmsHost"></div>
+            </div>
+
+            @* CodeMirror owns the host element; Blazor only renders the overlay beside it. *@
+            <div class="se-panel" role="tabpanel" aria-label="Code" hidden="@(tab != Tab.Code)">
+            <div class="se-editor-wrap">
+                <div class="se-editor" @ref="editorHost"></div>
+                @if (currentPath is null || !ScormPackage.IsText(currentPath))
+                {
+                    <div class="se-editor-blank">
+                        @if (currentPath is null)
+                        {
+                            <span class="text-muted">Pick a file on the left to edit its source.</span>
+                        }
+                        else
+                        {
+                            @if (ScormPreviewEndpoints.ContentTypeOf(currentPath).StartsWith("image/"))
+                            {
+                                <img src="@PreviewUrl(currentPath)?v=@version" alt="@currentPath" />
+                            }
+                            <span class="text-muted small">@currentPath · @FormatSize(Package?.Read(currentPath)?.Length ?? 0) · @ScormPreviewEndpoints.ContentTypeOf(currentPath)</span>
+                            <label class="btn btn-sm btn-outline-primary mb-0">
+                                Replace file…
+                                <InputFile OnChange="ReplaceFile" class="d-none" />
+                            </label>
+                        }
+                    </div>
+                }
+            </div>
+            </div>
+        </section>
+    </div>
+</div>
+
+@code {
+    private static readonly (string Label, int? Width)[] Widths = [("Full", null), ("Tablet", 768), ("Phone", 390)];
+
+    private ScormPackage? Package;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<ScormEditorPage>? selfRef;
+    private ElementReference editorHost, frame, lmsHost;
+
+    private string? currentPath, previewPath, newPath, renamePath, status;
+    private string statusKind = "info";
+    private bool live = true, loading, confirmDelete;
+    private enum PreviewMode { Edit, Interact }
+    private PreviewMode previewMode = PreviewMode.Edit;
+    private string editState = "";
+    private int? frameWidth;
+    private enum Tab { Preview, Code }
+    private Tab tab = Tab.Preview;
+    private bool refreshEditor;
+    private readonly SortedSet<string> savedPaths = new(StringComparer.Ordinal);
+    private int version;
+    private readonly HashSet<string> collapsed = [];
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (refreshEditor && module is not null)
+        {
+            refreshEditor = false;
+            await module.InvokeVoidAsync("refresh");
+        }
+        if (!firstRender) return;
+        module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/scorm-editor.js");
+        selfRef = DotNetObjectReference.Create(this);
+        await module.InvokeVoidAsync("init", selfRef, frame, editorHost, lmsHost);
+        await OpenPackage(SamplePackage.Create());
+    }
+
+    private async Task OpenPackage(ScormPackage package)
+    {
+        if (Package is not null)
+        {
+            Package.Changed -= OnPackageChanged;
+            Store.Remove(Package.Id);
+        }
+        Package = package;
+        Store.Add(package);
+        package.Changed += OnPackageChanged;
+        editState = "";
+        savedPaths.Clear();
+        currentPath = null;
+        tab = Tab.Preview;
+        collapsed.Clear();
+        await module!.InvokeVoidAsync("setPackage", package.Id);
+
+        var start = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
+        await OpenFile(start ?? (package.ManifestPath.Length > 0 ? package.ManifestPath : package.Paths.FirstOrDefault()));
+        await SetPreview(start);
+    }
+
+    // Raised from the preview endpoint's request thread as well as from this circuit.
+    // Raised for every save, so re-renders are batched: one per 250 ms at most. Re-rendering the
+    // whole page and file tree on each keystroke was the main source of lag on large courses.
+    private int renderQueued;
+    private void OnPackageChanged(string path)
+    {
+        if (Interlocked.Exchange(ref renderQueued, 1) == 1) return;
+        _ = Task.Delay(250).ContinueWith(_ => InvokeAsync(() =>
+        {
+            renderQueued = 0;
+            version++;
+            StateHasChanged();
+        }));
+    }
+
+    private async Task OpenZip(InputFileChangeEventArgs e)
+    {
+        loading = true;
+        try
+        {
+            await using var upload = e.File.OpenReadStream(maxAllowedSize: 1024L * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await upload.CopyToAsync(ms);
+            ms.Position = 0;
+            var package = ScormPackage.FromZip(e.File.Name, ms);
+            await OpenPackage(package);
+            Show(package.ManifestPath.Length == 0
+                ? $"Opened {e.File.Name}, but it has no imsmanifest.xml, so it is not a SCORM package yet."
+                : $"Opened {e.File.Name} ({package.Paths.Count} files).", package.ManifestPath.Length == 0 ? "warning" : "success");
+        }
+        catch (InvalidDataException)
+        {
+            Show($"{e.File.Name} is not a readable .zip file.", "danger");
+        }
+        catch (IOException ex)
+        {
+            Show($"Could not read {e.File.Name}: {ex.Message}", "danger");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private Task LoadSample() => OpenPackage(SamplePackage.Create());
+
+    private async Task OpenFile(string? path)
+    {
+        if (Package is null || path is null || !Package.Exists(path)) return;
+        currentPath = path;
+        renamePath = path;
+        confirmDelete = false;
+        if (ScormPackage.IsText(path))
+            await module!.InvokeVoidAsync("openText", path, Package.ReadText(path), ModeOf(path), false);
+        else
+            await module!.InvokeVoidAsync("hideEditor");
+        if (live && ScormPackage.IsHtml(path) && path != previewPath) await SetPreview(path);
+    }
+
+    private async Task EditFile(string path)
+    {
+        await OpenFile(path);
+        ShowTab(Tab.Code);
+    }
+
+    private async Task PreviewPage(string path)
+    {
+        await SetPreview(path);
+        ShowTab(Tab.Preview);
+    }
+
+    private async Task OpenItem(ScormManifest.Item item)
+    {
+        if (item.Path is null) return;
+        await OpenFile(item.Path);
+        await SetPreview(item.Path);
+        ShowTab(Tab.Preview);
+    }
+
+    private async Task SetPreview(string? path)
+    {
+        previewPath = path;
+        await module!.InvokeVoidAsync("loadPreview", path);
+    }
+
+    private async Task ReloadPreview()
+    {
+        await module!.InvokeVoidAsync("flush");
+        await module!.InvokeVoidAsync("reloadPreview");
+    }
+
+    private async Task ToggleLive(ChangeEventArgs e)
+    {
+        live = e.Value is true;
+        await module!.InvokeVoidAsync("setLive", live);
+    }
+
+    private async Task SetMode(PreviewMode mode)
+    {
+        previewMode = mode;
+        await module!.InvokeVoidAsync("setMode", mode == PreviewMode.Edit ? "edit" : "interact");
+    }
+
+    private async Task Exec(string command) => await module!.InvokeVoidAsync("exec", command);
+
+    private async Task SaveEdits() => await module!.InvokeVoidAsync("saveEdited");
+
+    private async Task UndoAllEdits()
+    {
+        var restored = await module!.InvokeAsync<string[]>("undoAllEdits");
+        savedPaths.Clear();
+        editState = "";
+        if (Package is not null && currentPath is not null && restored.Contains(currentPath))
+            await module!.InvokeVoidAsync("openText", currentPath, Package.ReadText(currentPath), ModeOf(currentPath), true);
+        Show(restored.Length == 0 ? "There were no saved preview edits to undo." : $"Restored {string.Join(", ", restored)}.", "info");
+    }
+
+    [JSInvokable]
+    public Task OnPreviewNavigated(string path) => InvokeAsync(() => { previewPath = path; StateHasChanged(); });
+
+    [JSInvokable]
+    public Task OnEditState(string state, string[] paths) => InvokeAsync(() =>
+    {
+        editState = state;
+        foreach (var p in paths) savedPaths.Add(p);
+        StateHasChanged();
+    });
+
+    [JSInvokable]
+    public Task OnImageReplaced(string path) => InvokeAsync(() => Show($"Replaced image {path}.", "success"));
+
+    private async Task FlushEdits() => await module!.InvokeVoidAsync("flush");
+
+    private async Task Reindent() => await module!.InvokeVoidAsync("reindent");
+
+    private async Task RevertFile()
+    {
+        if (Package is null || currentPath is null) return;
+        Package.Revert(currentPath);
+        if (ScormPackage.IsText(currentPath))
+            await module!.InvokeVoidAsync("openText", currentPath, Package.ReadText(currentPath), ModeOf(currentPath), true);
+        await module!.InvokeVoidAsync("reloadPreview");
+        Show($"Reverted {currentPath} to the version in the opened package.", "info");
+    }
+
+    private async Task AddFile()
+    {
+        if (Package is null) return;
+        var path = ScormPackage.Normalize(newPath ?? "");
+        if (path.Length == 0) return;
+        if (Package.Exists(path)) { Show($"{path} already exists.", "warning"); return; }
+        var text = ScormPackage.IsHtml(path)
+            ? "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>New page</title>\n</head>\n<body>\n  <h1>New page</h1>\n</body>\n</html>\n"
+            : "";
+        Package.WriteText(path, text);
+        newPath = null;
+        await EditFile(path);
+    }
+
+    private async Task UploadFiles(InputFileChangeEventArgs e)
+    {
+        if (Package is null) return;
+        var dir = currentPath is null ? "" : ScormPackage.DirOf(currentPath);
+        var count = 0;
+        foreach (var file in e.GetMultipleFiles(500))
+        {
+            var path = ScormPackage.Normalize($"{dir}/{file.Name}");
+            Package.Write(path, await ReadAll(file));
+            await module!.InvokeVoidAsync("forget", path);
+            count++;
+        }
+        await module!.InvokeVoidAsync("reloadPreview");
+        Show($"Added {count} file{(count == 1 ? "" : "s")} to {(dir.Length == 0 ? "the package root" : dir)}.", "success");
+    }
+
+    private async Task ReplaceFile(InputFileChangeEventArgs e)
+    {
+        if (Package is null || currentPath is null) return;
+        Package.Write(currentPath, await ReadAll(e.File));
+        await module!.InvokeVoidAsync("reloadPreview");
+        Show($"Replaced {currentPath}.", "success");
+    }
+
+    private async Task RenameFile()
+    {
+        if (Package is null || currentPath is null) return;
+        var to = ScormPackage.Normalize(renamePath ?? "");
+        if (to.Length == 0 || to == currentPath) return;
+        if (Package.Exists(to)) { Show($"{to} already exists.", "warning"); return; }
+        var from = currentPath;
+        Package.Rename(from, to);
+        await module!.InvokeVoidAsync("forget", from);
+        if (previewPath == from) await SetPreview(to);
+        await OpenFile(to);
+        Show($"Renamed {from} to {to}. Links to the old name are not updated.", "info");
+    }
+
+    private async Task DeleteFile()
+    {
+        if (Package is null || currentPath is null) return;
+        if (!confirmDelete) { confirmDelete = true; return; }
+        var path = currentPath;
+        Package.Delete(path);
+        await module!.InvokeVoidAsync("forget", path);
+        currentPath = null;
+        confirmDelete = false;
+        if (previewPath == path) await SetPreview(Package.Manifest?.LaunchPath);
+        Show($"Deleted {path}.", "info");
+    }
+
+    private async Task SyncManifest()
+    {
+        if (Package is null) return;
+        var count = Package.SyncManifestFileList();
+        if (count is null) { Show("Open a package with a valid imsmanifest.xml and at least one resource first.", "warning"); return; }
+        if (currentPath == Package.ManifestPath)
+            await module!.InvokeVoidAsync("openText", currentPath, Package.ReadText(currentPath), ModeOf(currentPath), true);
+        else
+            await module!.InvokeVoidAsync("forget", Package.ManifestPath);
+        Show($"imsmanifest.xml now lists {count} files in the launch resource.", "success");
+    }
+
+    private void ShowTab(Tab next)
+    {
+        if (tab == next) return;
+        tab = next;
+        _ = module?.InvokeVoidAsync("setPreviewVisible", next == Tab.Preview).AsTask();
+        // CodeMirror cannot measure itself while hidden, so it is refreshed once the Code tab is visible.
+        if (next == Tab.Code) refreshEditor = true;
+    }
+
+    private void Show(string message, string kind)
+    {
+        status = message;
+        statusKind = kind;
+        StateHasChanged();
+    }
+
+    private string PreviewUrl(string path) =>
+        $"scorm-preview/{Package!.Id}/{string.Join('/', path.Split('/').Select(Uri.EscapeDataString))}";
+
+    private static async Task<byte[]> ReadAll(IBrowserFile file)
+    {
+        await using var s = file.OpenReadStream(maxAllowedSize: 512L * 1024 * 1024);
+        using var ms = new MemoryStream();
+        await s.CopyToAsync(ms);
+        return ms.ToArray();
+    }
+
+    private static object ModeOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".html" or ".htm" or ".xhtml" => "htmlmixed",
+        ".css" => "css",
+        ".js" or ".mjs" => "javascript",
+        ".json" => new { name = "javascript", json = true },
+        ".xml" or ".xsd" or ".dtd" or ".svg" => "xml",
+        _ => "text/plain",
+    };
+
+    private static string FormatSize(long n) =>
+        n < 1024 ? $"{n} B" : n < 1024 * 1024 ? $"{n / 1024.0:0.0} KB" : $"{n / 1048576.0:0.0} MB";
+
+    /* ---------- file tree ---------- */
+
+    private sealed class Folder
+    {
+        public SortedDictionary<string, Folder> Folders { get; } = new(StringComparer.Ordinal);
+        public List<string> Files { get; } = [];
+    }
+
+    private IReadOnlyList<string>? treePaths;
+    private Folder? tree;
+
+    // The package returns the same path list until files are added or removed, so the tree is
+    // only rebuilt then.
+    private Folder TreeFor(IReadOnlyList<string> paths)
+    {
+        if (!ReferenceEquals(paths, treePaths)) { tree = BuildTree(paths); treePaths = paths; }
+        return tree!;
+    }
+
+    private static Folder BuildTree(IEnumerable<string> paths)
+    {
+        var root = new Folder();
+        foreach (var p in paths)
+        {
+            var parts = p.Split('/');
+            var node = root;
+            foreach (var part in parts[..^1])
+            {
+                if (!node.Folders.TryGetValue(part, out var next)) node.Folders[part] = next = new Folder();
+                node = next;
+            }
+            node.Files.Add(p);
+        }
+        return root;
+    }
+
+    private RenderFragment RenderFolder(Folder folder, string prefix) => __builder =>
+    {
+        foreach (var (name, sub) in folder.Folders)
+        {
+            var full = prefix + name;
+            var open = !collapsed.Contains(full);
+            <li>
+                <div class="se-row" tabindex="0" role="button" @onclick="() => ToggleFolder(full)">
+                    <span class="oi @(open ? "oi-folder" : "oi-caret-right") se-icon" aria-hidden="true"></span>
+                    <span class="se-name">@name</span>
+                </div>
+                @if (open)
+                {
+                    <ul>@RenderFolder(sub, full + "/")</ul>
+                }
+            </li>
+        }
+        foreach (var path in folder.Files)
+        {
+            var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+            <li>
+                <div class="se-row @(path == currentPath ? "current" : null)" tabindex="0" role="button" title="@path" @onclick="() => EditFile(path)">
+                    <span class="se-badge se-badge-@KindOf(path)">@(ext.Length == 0 ? "FILE" : ext.Length > 4 ? ext[..4].ToUpperInvariant() : ext.ToUpperInvariant())</span>
+                    <span class="se-name">@path.Split('/')[^1]</span>
+                    @if (Package!.IsDirty(path))
+                    {
+                        <span class="se-dot" title="Changed"></span>
+                    }
+                    @if (ScormPackage.IsHtml(path))
+                    {
+                        <button type="button" class="se-eye" title="Preview this page" aria-label="Preview @path"
+                                @onclick="() => PreviewPage(path)" @onclick:stopPropagation>
+                            <span class="oi oi-eye" aria-hidden="true"></span>
+                        </button>
+                    }
+                </div>
+            </li>
+        }
+    };
+
+    private void ToggleFolder(string full)
+    {
+        if (!collapsed.Remove(full)) collapsed.Add(full);
+    }
+
+    private static string KindOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".html" or ".htm" or ".xhtml" => "html",
+        ".css" => "css",
+        ".js" or ".mjs" => "js",
+        ".xml" or ".xsd" or ".dtd" => "xml",
+        _ => "other",
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Package is not null)
+        {
+            Package.Changed -= OnPackageChanged;
+            Store.Remove(Package.Id);
+        }
+        if (module is not null)
+        {
+            try { await module.DisposeAsync(); } catch (JSDisconnectedException) { }
+        }
+        selfRef?.Dispose();
+    }
+}

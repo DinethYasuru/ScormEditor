@@ -1,0 +1,33 @@
+<div class="top-row navbar navbar-dark">
+    <div class="container-fluid justify-content-center position-relative">
+        <a class="navbar-brand text-center m-0" href="">
+            <strong>IFS</strong> Academy<br />SCORM Editor
+        </a>
+        <button title="Navigation menu" class="navbar-toggler position-absolute" style="right: 0.75rem;" @onclick="ToggleNavMenu">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+    </div>
+</div>
+
+<div class="@NavMenuCssClass nav-scrollable" @onclick="ToggleNavMenu">
+    <nav class="flex-column">
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <span class="oi oi-home" aria-hidden="true"></span> Home
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="editor">
+                <span class="oi oi-pencil" aria-hidden="true"></span> SCORM Editor
+            </NavLink>
+        </div>
+    </nav>
+</div>
+
+@code {
+    private bool collapseNavMenu = true;
+
+    private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+
+    private void ToggleNavMenu() => collapseNavMenu = !collapseNavMenu;
+}
