@@ -22,9 +22,10 @@ public static class EditMapper
 {
     public sealed record AttrChange(string Name, string? OldValue, string? NewValue);
 
-    /// <summary>One edited element. Breaks are offsets in its old text where markup sits.</summary>
+    /// <summary>One edited element. Breaks are offsets in its old text where markup sits. Hide is a
+    /// CSS selector to hide for learners; Unhide removes every element hidden that way.</summary>
     public sealed record Edit(string Path, string OldHtml, string? NewHtml, string OldText, string? NewText,
-        AttrChange[]? Attrs, bool Structural, bool Lost, int[]? Breaks);
+        AttrChange[]? Attrs, bool Structural, bool Lost, int[]? Breaks, string? Hide = null, bool Unhide = false);
 
     /// <summary>A file the edits change. The display texts show encoded course data decoded and indented.</summary>
     public sealed record FileChange(string Path, string NewText, string OldDisplay, string NewDisplay, IReadOnlyList<string> Notes);
@@ -48,6 +49,11 @@ public static class EditMapper
         {
             var e = edits[index];
             var all = changeAll?.Contains(index) == true;
+            if (e.Hide is not null || e.Unhide)
+            {
+                if (package.Exists(e.Path)) HideRule(ws.File(e.Path), e.Hide);
+                continue;
+            }
             if (!package.Exists(e.Path)) continue;
             if (e.Lost || e.NewHtml is null)
             {
@@ -91,6 +97,39 @@ public static class EditMapper
             }
         }
         return new Result(ws.Changes(), problems);
+    }
+
+    /* ---------- hiding ---------- */
+
+    private static readonly Regex HiddenBlock = new(@"<style id=""scorm-editor-hidden"">(.*?)</style>\s*", RegexOptions.Singleline, RegexTimeout);
+
+    // Elements hidden for learners are listed in one style block in the page's <head>, so the rule
+    // works for pages a script builds as well. A null selector removes the block.
+    private static void HideRule(FileText file, string? selector)
+    {
+        var text = file.Text;
+        var block = HiddenBlock.Match(text);
+        if (selector is null)
+        {
+            if (block.Success) file.Text = text.Remove(block.Index, block.Length);
+            file.Note("Shows every element hidden with the editor again.");
+            return;
+        }
+        // A selector can't close the style element early.
+        selector = selector.Replace("<", "\\3c ");
+        var rule = $"\n  {selector} {{ display: none !important; }}";
+        if (block.Success)
+        {
+            var at = block.Groups[1].Index + block.Groups[1].Length;
+            file.Text = text[..at].TrimEnd() + rule + "\n" + text[at..];
+        }
+        else
+        {
+            var tag = $"<style id=\"scorm-editor-hidden\">{rule}\n</style>\n";
+            var head = text.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
+            file.Text = head >= 0 ? text[..head] + tag + text[head..] : tag + text;
+        }
+        file.Note($"Hides “{Shorten(selector)}” for learners.");
     }
 
     /* ---------- text ---------- */

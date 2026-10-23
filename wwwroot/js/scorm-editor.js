@@ -70,6 +70,13 @@ function hookPageEvents() {
         e.preventDefault();
         e.returnValue = "";
     });
+    // Ctrl/Cmd+S opens the review from anywhere on the editor page as well as inside the course.
+    window.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && !e.target.closest?.(".CodeMirror")) {
+            e.preventDefault();
+            if (hasDrafts()) dotnet.invokeMethodAsync("OnReviewRequested");
+        }
+    });
     // While a file is dragged over the page, show the drop target (a file input covering the page).
     const root = () => document.querySelector(".scorm-editor");
     let depth = 0;
@@ -255,6 +262,7 @@ let targets = [];                       // [{ win, doc, path, observer }]
 const hookedFrames = new WeakSet();
 const records = new Map();              // id -> { id, path, el, structural, oldHtml, oldText }
 let nextRecord = 1;
+const hides = [];                       // { id, path, selector } or { id, path, unhide: true }
 let lastDoc = null;
 let imageInput = null;
 let menu = null;
@@ -277,7 +285,7 @@ export function setMode(next) {
 }
 
 export function hasDrafts() {
-    return records.size > 0;
+    return records.size > 0 || hides.length > 0;
 }
 
 function enableIn(win) {
@@ -302,6 +310,12 @@ function enableIn(win) {
         doc.addEventListener("keydown", onKeyDown);
         doc.addEventListener("mousedown", closeMenu);
         doc.addEventListener("scroll", closeMenu, true);
+        // Buttons and links would leave the page when clicked; in Edit mode a click only places
+        // the cursor. Listening on the window, in the capture phase, runs before the course's own
+        // handlers (React and similar frameworks listen lower down).
+        win.addEventListener("click", blockActions, true);
+        win.addEventListener("auxclick", blockActions, true);
+        win.addEventListener("submit", blockActions, true);
         // Courses often add their content frames after load, so watch for new ones.
         const observer = new MutationObserver(() => hookFrames(doc));
         observer.observe(doc.documentElement, { childList: true, subtree: true });
@@ -355,6 +369,8 @@ function teardownEditing() {
                 ["mousedown", closeMenu], ["scroll", closeMenu, true]]) {
                 t.doc.removeEventListener(type, fn, !!capture);
             }
+            for (const type of ["click", "auxclick", "submit"]) t.win.removeEventListener(type, blockActions, true);
+            t.doc.querySelectorAll("[data-se-hidden-preview]").forEach((n) => n.remove());
             t.doc.querySelectorAll("[data-se-injected]").forEach((n) => n.remove());
             t.doc.querySelectorAll("[data-se-shield]").forEach((n) => n.removeAttribute("data-se-shield"));
         } catch { }
@@ -471,7 +487,7 @@ function onEditInput(e) {
 // The editor page only hears when the set of edited pages changes, not on every keystroke.
 let reported = "";
 function reportDrafts() {
-    const paths = [...new Set([...records.values()].map((r) => r.path))].sort();
+    const paths = [...new Set([...records.values(), ...hides].map((r) => r.path))].sort();
     const key = paths.join("|");
     if (key === reported) return;
     reported = key;
@@ -517,7 +533,7 @@ function textBreaks(root) {
 // Edited elements for the review: their HTML and text before the first edit and now, and the
 // attributes that changed when the element's structure is the same.
 export function getDrafts() {
-    const out = [];
+    const out = hides.map((h) => ({ path: h.path, oldHtml: "", newHtml: "", oldText: "", newText: "", attrs: [], structural: false, lost: false, breaks: [], hide: h.selector ?? null, unhide: !!h.unhide }));
     const live = [...records.values()].filter((r) => r.el.isConnected);
     for (const r of records.values()) {
         if (!r.el.isConnected) {
@@ -554,6 +570,7 @@ export function getDrafts() {
 export function clearDrafts(reload) {
     for (const r of records.values()) r.el.removeAttribute("data-se-rec");
     records.clear();
+    hides.length = 0;
     reportDrafts();
     if (reload) {
         previewStale = false;
@@ -581,10 +598,96 @@ export function download(url) {
 
 export function resetEdits() {
     records.clear();
+    hides.length = 0;
     reported = "";
 }
 
 /* ---------- right-click menu ---------- */
+
+const ACTIONS = "a[href], button, [role=button], [role=link], input[type=button], input[type=submit], input[type=reset], summary, label[for]";
+
+function blockActions(e) {
+    if (e.type === "submit" || e.target.closest?.(ACTIONS) || e.target.closest?.("[onclick]")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+}
+
+// The element a button's visible label is written in: its longest piece of text, so icons and
+// other markup inside the button stay as they are.
+function labelNodeOf(el) {
+    let best = null;
+    const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.data.trim() && (!best || n.data.trim().length > best.data.trim().length)) best = n;
+    }
+    return best;
+}
+
+function editLabelForm(t, action) {
+    if (action.tagName === "INPUT") {
+        form("Edit button label", [{ name: "label", label: "Label", value: action.value }],
+            (v) => change(t, { el: action }, () => action.setAttribute("value", v.label)));
+        return;
+    }
+    const node = labelNodeOf(action);
+    if (!node) return;
+    // Shown as typed in the course, not as styled on screen (some courses show labels in capitals).
+    form("Edit button label", [{ name: "label", label: "Label (as written in the course; the course's style may show it in capitals)", value: node.data.trim() }],
+        (v) => change(t, { el: node.parentElement }, () => {
+            const lead = node.data.match(/^\s*/)[0], trail = node.data.match(/\s*$/)[0];
+            node.data = lead + v.label + trail;
+        }));
+}
+
+// A CSS selector that finds this element (and as few others as possible) on the page, built from
+// its id or its stable class names. Generated names (with long runs of digits or hashes) are
+// skipped because they change each time a course is published.
+function selectorFor(el) {
+    const stable = (c) => /^[a-zA-Z_][\w-]*$/.test(c) && !/\d{3,}|^css-|^sc-|^jsx-|[a-z0-9]{8,}$/i.test(c) && !c.startsWith("se-");
+    const part = (n) => {
+        if (n.id && stable(n.id)) return "#" + CSS.escape(n.id);
+        const classes = [...n.classList].filter(stable).map((c) => "." + CSS.escape(c)).join("");
+        return n.tagName.toLowerCase() + classes;
+    };
+    const doc = el.ownerDocument;
+    let selector = part(el);
+    let n = el;
+    for (let depth = 0; depth < 5 && doc.querySelectorAll(selector).length > 1 && n.parentElement && n.parentElement !== doc.body; depth++) {
+        n = n.parentElement;
+        selector = part(n) + " " + selector;
+    }
+    return { selector, count: doc.querySelectorAll(selector).length };
+}
+
+// Hiding is saved as a style rule in the page's HTML, so it works for pages a script builds too.
+function hideForm(t, el) {
+    const { selector, count } = selectorFor(el);
+    const what = el.closest(ACTIONS) ? "button" : "element";
+    form(`Hide this ${what}`, [{
+        name: "info", readonly: true, value: count > 1
+            ? `This hides ${count} matching elements on the page for learners (the editor can't tell them apart). You can show them again from this menu.`
+            : `Learners won't see this ${what}. You can show it again from this menu.`,
+    }], () => {
+        hides.push({ id: nextRecord++, path: t.path, selector });
+        previewHide(t.doc, selector);
+        reportDrafts();
+    });
+}
+
+function previewHide(doc, selector) {
+    const style = doc.createElement("style");
+    style.setAttribute("data-se-injected", "");
+    style.setAttribute("data-se-hidden-preview", "");
+    style.textContent = `${selector}{display:none!important}`;
+    (doc.head || doc.documentElement).append(style);
+}
+
+function showHiddenAgain(t) {
+    hides.push({ id: nextRecord++, path: t.path, unhide: true });
+    t.doc.querySelectorAll("#scorm-editor-hidden, [data-se-hidden-preview]").forEach((n) => n.remove());
+    reportDrafts();
+}
 
 function onContextMenu(e) {
     const doc = e.currentTarget;
@@ -626,6 +729,18 @@ function onContextMenu(e) {
         items.push(["Replace image…", () => pickImage(img)]);
         items.push(["Edit alt text…", () => form(`Alt text`, [{ name: "alt", label: "Describes the image for screen readers", value: img.getAttribute("alt") ?? "" }],
             (v) => change(t, { el: img }, () => img.setAttribute("alt", v.alt)))]);
+    }
+    const action = el.closest?.(ACTIONS);
+    if (action) {
+        if (items.length) items.push(null);
+        items.push(["Edit label…", () => editLabelForm(t, action)]);
+        items.push(["Hide this for learners…", () => hideForm(t, action)]);
+    } else if (block && !embed) {
+        if (items.length) items.push(null);
+        items.push(["Hide this for learners…", () => hideForm(t, block)]);
+    }
+    if (doc.getElementById("scorm-editor-hidden") || doc.querySelector("[data-se-hidden-preview]")) {
+        items.push(["Show hidden elements again", () => showHiddenAgain(t)]);
     }
     const target = embed || img || link || block;
     if (target) {
@@ -767,6 +882,14 @@ function form(title, fields, onApply) {
         wrap.className = f.checkbox ? "form-check mb-2" : "mb-2";
         const input = document.createElement(f.multiline ? "textarea" : "input");
         input.id = id;
+        if (f.readonly) {
+            const p = document.createElement("p");
+            p.className = "small mb-0";
+            p.textContent = f.value;
+            wrap.append(p);
+            box.append(wrap);
+            continue;
+        }
         if (f.checkbox) { input.type = "checkbox"; input.className = "form-check-input"; input.checked = !!f.value; }
         else { input.className = "form-control form-control-sm" + (f.multiline ? " se-dialog-code" : ""); input.value = f.value ?? ""; if (!f.multiline) input.type = "text"; }
         const label = document.createElement("label");
@@ -793,13 +916,13 @@ function form(title, fields, onApply) {
     box.onsubmit = (e) => {
         e.preventDefault();
         const values = {};
-        for (const f of fields) values[f.name] = f.checkbox ? inputs[f.name].checked : inputs[f.name].value;
+        for (const f of fields) if (!f.readonly) values[f.name] = f.checkbox ? inputs[f.name].checked : inputs[f.name].value;
         close();
         onApply(values);
     };
-    const first = inputs[fields[0].name];
-    first.focus();
-    first.select?.();
+    const first = inputs[fields.find((f) => !f.readonly)?.name];
+    (first ?? ok).focus();
+    first?.select?.();
 }
 
 /* ---------- images ---------- */
