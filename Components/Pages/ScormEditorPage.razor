@@ -36,7 +36,6 @@
                 <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open course…")
                 <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
             </label>
-            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="LoadSample" title="Open a small example course to try the editor">Try a sample</button>
             @if (Package is not null)
             {
                 @if (Package.ChangeCount > 0)
@@ -76,7 +75,23 @@
         </div>
     }
 
-    <div class="se-grid @(sideOpen ? null : "side-closed")">
+    @if (Package is null)
+    {
+        @* Start screen. The editor below stays in the page (hidden) because the preview frame and
+           code editor are set up once when the page loads. *@
+        <div class="se-start">
+            <span class="oi oi-data-transfer-upload se-start-icon" aria-hidden="true"></span>
+            <h4>Open a SCORM course to edit it</h4>
+            <p class="text-muted mb-3">Choose the course .zip exported from your authoring tool, or drag it onto this page.</p>
+            <label class="btn btn-primary @(loading ? "disabled" : "")">
+                <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Choose a course .zip")
+                <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
+            </label>
+            <p class="small text-muted mt-3 mb-0">Your changes are kept only while this tab is open. Press Download course to keep them.</p>
+        </div>
+    }
+
+    <div class="se-grid @(sideOpen ? null : "side-closed")" hidden="@(Package is null)">
         @* Package: course structure, manifest facts and the file tree. It folds into a thin rail to
            give the editor the full width. *@
         @if (!sideOpen)
@@ -471,7 +486,6 @@
         var prefs = await module.InvokeAsync<Dictionary<string, string?>>("getPrefs");
         advanced = prefs.GetValueOrDefault("advanced") == "1";
         showTips = prefs.GetValueOrDefault("tips") != "0";
-        await OpenPackage(SamplePackage.Create());
         StateHasChanged();
     }
 
@@ -548,8 +562,6 @@
             loading = false;
         }
     }
-
-    private Task LoadSample() => AfterDrafts(() => OpenPackage(SamplePackage.Create()));
 
     private async Task OpenFile(string? path)
     {
