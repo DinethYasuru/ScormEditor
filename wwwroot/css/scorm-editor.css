@@ -273,3 +273,115 @@
     .se-side { max-height: 45vh; }
     .se-main { height: 85vh; }
 }
+
+/* Collapsed package pane */
+.se-grid.side-closed { grid-template-columns: 34px minmax(0, 1fr); }
+.se-rail {
+    align-items: center;
+    padding-top: 4px;
+    gap: 8px;
+    background: var(--se-head, #f4f6f9);
+}
+.se-rail-label {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: .75rem;
+    font-weight: 600;
+    color: #6c757d;
+    white-space: nowrap;
+}
+.se-side[hidden] { display: none; }
+
+/* Right-click menu and its small dialogs (rendered on the editor page, above the preview) */
+.se-ctx {
+    position: fixed;
+    z-index: 1080;
+    min-width: 210px;
+    padding: 4px 0;
+    background: #fff;
+    border: 1px solid var(--se-border, #dde2ea);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .18);
+    font-size: .875rem;
+}
+.se-ctx button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: none;
+    padding: 5px 14px;
+    color: #212529;
+}
+.se-ctx button:hover, .se-ctx button:focus { background: #e9f1fb; outline: none; }
+.se-ctx hr { margin: 4px 0; }
+
+.se-dialog-backdrop, .se-review-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1070;
+    background: rgba(5, 39, 103, .25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+.se-dialog {
+    width: min(460px, 100%);
+    background: #fff;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .25);
+}
+.se-dialog h6 { margin-bottom: 12px; }
+.se-dialog-code { font-family: SFMono-Regular, Consolas, monospace; font-size: .8rem; min-height: 180px; }
+
+/* Review changes */
+.se-review {
+    width: min(1100px, 100%);
+    max-height: 100%;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .25);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.se-review-head, .se-review-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #f4f6f9;
+}
+.se-review-head { border-bottom: 1px solid #dde2ea; flex-wrap: wrap; }
+.se-review-foot { border-top: 1px solid #dde2ea; justify-content: flex-end; }
+.se-review-body { overflow: auto; flex: 1; min-height: 0; padding: 12px 16px; }
+.se-plus { color: #1a7f37; font-weight: 600; }
+.se-minus { color: #cf222e; font-weight: 600; }
+.se-diff-file { border: 1px solid #dde2ea; border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+.se-diff-file > header {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #f4f6f9;
+    border-bottom: 1px solid #dde2ea;
+}
+.se-diff-path { font-family: SFMono-Regular, Consolas, monospace; font-size: .8rem; font-weight: 600; word-break: break-all; }
+.se-diff { width: 100%; border-collapse: collapse; font-family: SFMono-Regular, Consolas, monospace; font-size: .78rem; }
+.se-diff td { vertical-align: top; padding: 0 6px; }
+.se-diff .se-ln { width: 1%; min-width: 3.2em; text-align: right; color: #8c959f; user-select: none; }
+.se-diff .se-code { white-space: pre-wrap; word-break: break-all; }
+.se-diff .se-sign { display: inline-block; width: 1.2em; user-select: none; color: #8c959f; }
+.se-diff-added { background: #e6ffec; }
+.se-diff-added mark { background: #abf2bc; padding: 0; }
+.se-diff-removed { background: #ffebe9; }
+.se-diff-removed mark { background: #ffc1ba; padding: 0; }
+.se-diff-gap td { background: #f1f4f8; color: #8c959f; text-align: center; }
+
+@media (max-width: 900px) {
+    .se-grid.side-closed { grid-template-columns: minmax(0, 1fr); }
+    .se-rail { flex-direction: row; padding: 2px 4px; }
+    .se-rail-label { writing-mode: horizontal-tb; transform: none; }
+}
