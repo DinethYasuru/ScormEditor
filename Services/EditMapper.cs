@@ -30,8 +30,8 @@ public static class EditMapper
     /// <summary>A file the edits change. The display texts show encoded course data decoded and indented.</summary>
     public sealed record FileChange(string Path, string NewText, string OldDisplay, string NewDisplay, IReadOnlyList<string> Notes);
 
-    /// <summary>An edit that is left out. Places is set when the text was found more than once, so
-    /// the user can choose to change every copy (by passing Edit in changeAll).</summary>
+    /// <summary>An edit that is left out (Edit is its index). Places is set when the text was found more
+    /// than once, so the user can choose to change every copy (by passing Edit in changeAll).</summary>
     public sealed record Problem(string Page, string What, string Why, int Edit = -1, int Places = 0);
 
     public sealed record Result(IReadOnlyList<FileChange> Files, IReadOnlyList<Problem> Problems);
@@ -41,12 +41,14 @@ public static class EditMapper
     private static readonly Regex HtmlNearby = new(@"<[a-zA-Z/][^<>]{0,200}>|&[a-zA-Z]+;|&#\d+;", RegexOptions.None, RegexTimeout);
     private static readonly string[] SearchExtensions = [".html", ".htm", ".xhtml", ".js", ".mjs", ".json", ".xml"];
 
-    public static Result Apply(ScormPackage package, IReadOnlyList<Edit> edits, IReadOnlySet<int>? changeAll = null)
+    /// <summary>Maps the edits to file changes. Edits whose index is in skip (unticked in the review) are left out.</summary>
+    public static Result Apply(ScormPackage package, IReadOnlyList<Edit> edits, IReadOnlySet<int>? changeAll = null, IReadOnlySet<int>? skip = null)
     {
         var ws = new Workspace(package);
         var problems = new List<Problem>();
         for (var index = 0; index < edits.Count; index++)
         {
+            if (skip?.Contains(index) == true) continue;
             var e = edits[index];
             var all = changeAll?.Contains(index) == true;
             if (e.Hide is not null || e.Unhide)
@@ -58,7 +60,7 @@ public static class EditMapper
             if (e.Lost || e.NewHtml is null)
             {
                 problems.Add(new Problem(e.Path, Describe(e.OldText),
-                    "The page's own script replaced this part of the page after you edited it, so the edit was lost."));
+                    "The page's own script replaced this part of the page after you edited it, so the edit was lost.", index));
                 continue;
             }
             if (e.OldHtml == e.NewHtml) continue;
@@ -74,7 +76,7 @@ public static class EditMapper
             if (e.Structural)
             {
                 problems.Add(new Problem(e.Path, Describe(e.OldText),
-                    "This changes the page's structure, and the element is not written in the page's HTML file (a script builds it), so it can't be saved from the preview."));
+                    "This changes the page's structure, and the element is not written in the page's HTML file (a script builds it), so it can't be saved from the preview.", index));
                 continue;
             }
 
@@ -89,7 +91,7 @@ public static class EditMapper
                 if (a.OldValue is null || a.NewValue is null)
                 {
                     problems.Add(new Problem(e.Path, $"{(a.OldValue is null ? "Adding" : "Removing")} the {a.Name} attribute",
-                        "The element is not written in the page's HTML file (a script builds it), so only changes to existing text and values can be saved."));
+                        "The element is not written in the page's HTML file (a script builds it), so only changes to existing text and values can be saved.", index));
                     continue;
                 }
                 var (why, places) = ReplaceValue(ws, e.Path, a.OldValue, a.NewValue, all);
@@ -97,6 +99,185 @@ public static class EditMapper
             }
         }
         return new Result(ws.Changes(), problems);
+    }
+
+    /// <summary>Whether an edit changes anything; elements typed into and then put back don't.</summary>
+    public static bool Changes(Edit e) => e.Hide is not null || e.Unhide || e.Lost || e.NewHtml is null || e.NewHtml != e.OldHtml;
+
+    /// <summary>A one-line description of an edit for the review's checklist and the change log.</summary>
+    public static string Summarize(Edit e)
+    {
+        if (e.Unhide) return "Show hidden elements again";
+        if (e.Hide is not null) return $"Hide for learners: {Shorten(e.Hide)}";
+        if (e.Lost || e.NewHtml is null) return $"Edit to {Describe(e.OldText)} (lost when the page redrew it)";
+        var parts = new List<string>();
+        if (e.NewText is not null && e.NewText != e.OldText) parts.Add(TextChange(e.OldText, e.NewText));
+        foreach (var a in e.Attrs ?? [])
+            parts.Add($"{AttrLabel(a.Name)}: {(a.OldValue is null ? "(none)" : Shorten(a.OldValue))} → {(a.NewValue is null ? "(removed)" : Shorten(a.NewValue))}");
+        if (parts.Count == 0) parts.Add($"Formatting of {Describe(e.OldText)}");
+        return string.Join("; ", parts);
+    }
+
+    // “…the changed words…” → “…the new words…”, with a little of the text around the change.
+    private static string TextChange(string oldText, string newText)
+    {
+        oldText = Regex.Replace(oldText, @"\s+", " ").Trim();
+        newText = Regex.Replace(newText, @"\s+", " ").Trim();
+        if (oldText.Length == 0) return $"Added text “{Shorten(newText)}”";
+        if (newText.Length == 0) return $"Removed text “{Shorten(oldText)}”";
+        var p = 0;
+        while (p < oldText.Length && p < newText.Length && oldText[p] == newText[p]) p++;
+        var s = 0;
+        while (s < oldText.Length - p && s < newText.Length - p && oldText[^(s + 1)] == newText[^(s + 1)]) s++;
+        const int Around = 20;
+        string Window(string t)
+        {
+            var from = Math.Max(0, p - Around);
+            var to = Math.Min(t.Length, t.Length - s + Around);
+            var w = t[from..to];
+            if (w.Length > 90) w = w[..87] + "…";
+            return (from > 0 ? "…" : "") + w + (to < t.Length && !w.EndsWith('…') ? "…" : "");
+        }
+        return $"“{Window(oldText)}” → “{Window(newText)}”";
+    }
+
+    private static string AttrLabel(string name) => name switch
+    {
+        "href" => "Link",
+        "src" or "data-se-orig-src" => "File",
+        "alt" => "Image description",
+        "title" => "Tooltip",
+        "target" => "Opens in",
+        _ => name,
+    };
+
+    /* ---------- find and replace ---------- */
+
+    /// <summary>One place the searched text was found: the file, and the text around it as a reader sees it.</summary>
+    public sealed record Hit(int Index, string Path, string Before, string Text, string After);
+
+    /// <summary>
+    /// Finds text the learner sees, in every page, data file and encoded course data of the package,
+    /// and replaces it at each hit not in skip. Markup, scripts and data keys are never touched:
+    /// in pages only text between tags counts, and in script data only string values.
+    /// </summary>
+    public static (Result Result, IReadOnlyList<Hit> Hits) FindReplace(ScormPackage package, string find, string replace,
+        bool matchCase, bool wholeWord, IReadOnlySet<int>? skip = null, int max = 500)
+    {
+        var ws = new Workspace(package);
+        if (find.Trim().Length == 0) return (new Result([], []), []);
+        var pattern = (wholeWord ? @"(?<![\p{L}\p{N}_])" : "") + "(" + Flexible(find, 0, find.Length, []) + ")" + (wholeWord ? @"(?![\p{L}\p{N}_])" : "");
+        var re = new Regex(pattern, matchCase ? RegexOptions.None : RegexOptions.IgnoreCase, RegexTimeout);
+        var hits = new List<Hit>();
+        var chosen = new List<(Container, Match)>();
+        foreach (var (where, m) in ws.FindAll(re, ""))
+        {
+            var g = m.Groups[1];
+            if (ReaderText(where, g.Index) is not var (lo, hi)) continue;
+            if (hits.Count >= max) break;
+            var text = where.Text;
+            hits.Add(new Hit(hits.Count, where.File.Path,
+                Readable(text, Math.Max(lo, g.Index - 60), g.Index, true),
+                Readable(text, g.Index, g.Index + g.Length, false),
+                Readable(text, g.Index + g.Length, Math.Min(hi, g.Index + g.Length + 60), false)));
+            if (skip?.Contains(hits.Count - 1) != true) chosen.Add((where, m));
+        }
+        if (chosen.Count > 0) ws.Replace(chosen, _ => replace, isText: true);
+        return (new Result(ws.Changes(), []), hits);
+    }
+
+    // Text a learner reads: in a page, outside tags, scripts and styles; in script data, inside a
+    // string that is not an object key, and outside any markup the string holds. Returns the
+    // bounds of the text around it (the string, for script data), or null.
+    private static (int Lo, int Hi)? ReaderText(Container c, int at)
+    {
+        var text = c.Text;
+        if (c is WholeFile && c.File.IsHtml)
+        {
+            if (c.IsScript(at) || InsideTag(text, 0, at)) return null;
+            var style = text.LastIndexOf("<style", at, StringComparison.OrdinalIgnoreCase);
+            if (style >= 0 && text.LastIndexOf("</style", at, StringComparison.OrdinalIgnoreCase) < style) return null;
+            return (0, text.Length);
+        }
+        if (StringAround(text, at) is not var (lo, hi)) return null;
+        if (InsideTag(text, lo, at) || InsideEscapedTag(text, lo, at)) return null;
+        if (!ReadsAsText(c, text.AsSpan(lo, hi - lo))) return null;
+        return (lo, hi);
+    }
+
+    // The JSON string value holding position at: its contents' bounds, or null when at is not in a
+    // string value (it's in code, a key, or anything else). Script files aren't parsed, so this
+    // looks only at the string itself and the punctuation either side. A string written inside
+    // another string (Storyline's data) has escaped quotes, \"like this\".
+    private static (int Lo, int Hi)? StringAround(string text, int at) => StringAround(text, at, nested: false) ?? StringAround(text, at, nested: true);
+
+    private static (int Lo, int Hi)? StringAround(string text, int at, bool nested)
+    {
+        // A quote that ends a string at this level: unescaped, or for a nested string escaped once (\").
+        bool Ends(int i)
+        {
+            var n = 0;
+            while (i - 1 - n >= 0 && text[i - 1 - n] == '\\') n++;
+            return nested ? n == 1 : n % 2 == 0;
+        }
+        var open = at;
+        do open = text.LastIndexOf('"', open - 1); while (open > 0 && !Ends(open));
+        if (open <= 0 || !Ends(open)) return null;
+        var close = at - 1;
+        do close = text.IndexOf('"', close + 1); while (close >= 0 && !Ends(close));
+        if (close < 0) return null;
+        var lo = open + 1;
+        var hi = nested ? close - 1 : close;
+        if (hi < at || text.AsSpan(lo, hi - lo).IndexOfAny('\n', '\r') >= 0) return null;
+        var before = (nested ? open - 1 : open) - 1;
+        while (before >= 0 && char.IsWhiteSpace(text[before])) before--;
+        var after = close + 1;
+        while (after < text.Length && char.IsWhiteSpace(text[after])) after++;
+        if (before < 0 || text[before] is not (':' or '[' or ',' or '(')) return null;
+        if (after >= text.Length || text[after] is not (',' or '}' or ']' or ')')) return null;
+        return (lo, hi);
+    }
+
+    private static readonly Regex Prose = new(@"\p{L}{2,}(?:\s|&nbsp;|\\u00[aA]0)+\p{L}|<\w|\\u003[cC]\w", RegexOptions.None, RegexTimeout);
+    private static readonly Regex Label = new(@"^\p{Lu}[\p{L}\p{N}'’.,!?:()\- ]*$", RegexOptions.None, RegexTimeout);
+
+    // Script strings also hold settings, names and code (type: "lesson", "Array"). Only strings
+    // that read as text count: words with spaces between them, or markup. In JSON data (a .json
+    // file or Rise course data), a capitalised label such as "Summary" counts too.
+    private static bool ReadsAsText(Container c, ReadOnlySpan<char> value)
+    {
+        if (value.Contains("${", StringComparison.Ordinal)) return false;
+        var s = value.ToString();
+        if (Prose.IsMatch(s)) return true;
+        var json = c is Blob || c.File.Path.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
+        return json && Label.IsMatch(s);
+    }
+
+    private static bool InsideTag(string text, int from, int at)
+    {
+        if (at <= from) return false;
+        var open = text.LastIndexOf('<', at - 1, at - from);
+        return open >= 0 && text.LastIndexOf('>', at - 1, at - from) < open;
+    }
+
+    private static bool InsideEscapedTag(string text, int from, int at)
+    {
+        var region = text[from..at];
+        var open = Math.Max(region.LastIndexOf("\\u003c", StringComparison.OrdinalIgnoreCase), -1);
+        return open >= 0 && region.LastIndexOf("\\u003e", StringComparison.OrdinalIgnoreCase) < open;
+    }
+
+    // A bit of file text as a reader sees it: tags dropped, entities and escapes decoded.
+    private static string Readable(string text, int from, int to, bool tail)
+    {
+        var t = text[from..to];
+        t = Regex.Replace(t, @"<(script|style)\b.*?(?:</\1>|$)|^.*?</(?:script|style)>", " ", RegexOptions.Singleline | RegexOptions.IgnoreCase, RegexTimeout);
+        t = Regex.Replace(t, @"\\u003[cC].*?\\u003[eE]|<[^<>]*>|^[^<>]*>|<[^<>]*$", " ");
+        t = Regex.Replace(t, @"\\u([0-9a-fA-F]{4})", m => ((char)Convert.ToInt32(m.Groups[1].Value, 16)).ToString());
+        t = t.Replace("\\n", " ").Replace("\\\"", "\"").Replace("\\/", "/");
+        t = System.Net.WebUtility.HtmlDecode(t);
+        t = Regex.Replace(t, @"\s+", " ");
+        return tail ? t.TrimStart() : t.TrimEnd();
     }
 
     /* ---------- hiding ---------- */

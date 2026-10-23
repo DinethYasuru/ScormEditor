@@ -52,6 +52,8 @@ export function getPrefs() {
     try {
         for (const key of ["advanced", "tips"]) prefs[key] = localStorage.getItem("scorm-editor." + key);
     } catch { }
+    // Minutes ahead of UTC, so the change log shows the user's own time.
+    prefs.tz = String(-new Date().getTimezoneOffset());
     return prefs;
 }
 
@@ -169,8 +171,10 @@ async function saveNow(path) {
     if (live) schedulePreviewReload();
 }
 
-async function putFile(path, body) {
-    const res = await fetch(`${base}/${encodePath(path)}`, { method: "PUT", body });
+// A step label makes the write one undo step on the server and a line in the change log.
+async function putFile(path, body, step) {
+    const headers = step ? { "X-Scorm-Editor-Step": encodeURIComponent(step) } : {};
+    const res = await fetch(`${base}/${encodePath(path)}`, { method: "PUT", body, headers });
     if (!res.ok) throw new Error(`Saving ${path} failed (${res.status})`);
 }
 
@@ -1006,7 +1010,7 @@ async function replaceImage(img, file) {
         ref = relative(dirOf(t.path), target);
     }
     if (ref !== origRef) track(t, { el: img });
-    await putFile(target, await file.arrayBuffer());
+    await putFile(target, await file.arrayBuffer(), `Replaced image ${target.split("/").pop()} with ${file.name}`);
     img.setAttribute("data-se-orig-src", ref);
     img.removeAttribute("srcset");
     img.setAttribute("src", `${base}/${encodePath(target)}?v=${Date.now()}`);

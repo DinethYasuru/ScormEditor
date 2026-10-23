@@ -25,7 +25,7 @@
                 }
                 @if (Package.ChangeCount > 0)
                 {
-                    <button type="button" class="badge text-bg-warning border-0" title="See every change since the package was opened" @onclick="ReviewPackage">
+                    <button type="button" class="badge text-bg-warning border-0" title="See the change log and every change since the course was opened" @onclick="ReviewPackage">
                         @Package.ChangeCount @(Package.ChangeCount == 1 ? "changed file" : "changed files")
                     </button>
                 }
@@ -38,11 +38,20 @@
             </label>
             @if (Package is not null)
             {
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="OpenFind" title="Find text anywhere in the course and replace it">
+                    <span class="oi oi-magnifying-glass me-1" aria-hidden="true"></span>Find and replace
+                </button>
+                @if (Package.UndoLabel is { } undoLabel)
+                {
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="UndoLast" title="Undo: @undoLabel">
+                        <span class="oi oi-action-undo me-1" aria-hidden="true"></span>Undo
+                    </button>
+                }
                 @if (Package.ChangeCount > 0)
                 {
                     <button type="button" class="btn btn-sm @(confirmStartOver ? "btn-danger" : "btn-outline-danger")" @onclick="StartOver"
                             title="Undo every change and go back to the course as it was when you opened it">
-                        <span class="oi oi-action-undo me-1" aria-hidden="true"></span>@(confirmStartOver ? "Click again to undo everything" : "Start over")
+                        <span class="oi oi-reload me-1" aria-hidden="true"></span>@(confirmStartOver ? "Click again to undo everything" : "Start over")
                     </button>
                 }
                 <button type="button" class="btn btn-sm btn-primary" @onclick="Export" title="Download the edited course as a .zip to upload to your LMS">
@@ -359,10 +368,59 @@
                     <div class="alert alert-info py-2 px-3 mb-0 rounded-0 small">@review.Note</div>
                 }
                 <div class="se-review-body">
+                    @if (review.Drafts && review.Edits is { } edits && review.Skip is { } skip)
+                    {
+                        var listed = Enumerable.Range(0, edits.Length).Where(i => EditMapper.Changes(edits[i])).ToList();
+                        <div class="se-changes">
+                            <div class="se-changes-head">
+                                <strong>Your changes</strong>
+                                <span class="text-muted small">Untick a change to leave it out. Unticked changes are thrown away when you save.</span>
+                                @if (listed.Count > 1)
+                                {
+                                    <button type="button" class="btn btn-sm btn-link p-0 ms-auto" @onclick="() => TickAll(listed, skip.Count > 0)">@(skip.Count > 0 ? "Tick all" : "Untick all")</button>
+                                }
+                            </div>
+                            <ul class="list-unstyled mb-0">
+                                @foreach (var i in listed)
+                                {
+                                    var e = edits[i];
+                                    var failed = review.Problems?.Any(pr => pr.Edit == i) == true;
+                                    <li>
+                                        <label class="se-change @(skip.Contains(i) ? "off" : null)">
+                                            <input type="checkbox" class="form-check-input" checked="@(!skip.Contains(i))" @onchange="() => ToggleEdit(i)" />
+                                            <span>
+                                                @EditMapper.Summarize(e)
+                                                <span class="text-muted small">· @e.Path.Split('/')[^1]</span>
+                                                @if (failed && !skip.Contains(i))
+                                                {
+                                                    <span class="badge text-bg-warning ms-1">can't be saved, see below</span>
+                                                }
+                                            </span>
+                                        </label>
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
+                    @if (!review.Drafts && review.Log is { Count: > 0 } log)
+                    {
+                        <div class="se-changes">
+                            <div class="se-changes-head">
+                                <strong>Change log</strong>
+                                <span class="text-muted small">Also saved in the downloaded course as scorm-editor-changes.txt.</span>
+                            </div>
+                            <ul class="list-unstyled mb-0 se-log">
+                                @foreach (var entry in log)
+                                {
+                                    <li><span class="text-muted">@entry.Time.ToOffset(Package!.TimeOffset).ToString("HH:mm")</span> <span class="text-muted">@entry.Page.Split('/')[^1]:</span> @entry.What</li>
+                                }
+                            </ul>
+                        </div>
+                    }
                     @if (review.Problems is { Count: > 0 } problems)
                     {
                         <div class="alert alert-warning py-2 px-3 small">
-                            <strong>@problems.Count @(problems.Count == 1 ? "edit" : "edits") can't be saved as they are and will be left out:</strong>
+                            <strong>@problems.Count @(problems.Count == 1 ? "change" : "changes") can't be saved as @(problems.Count == 1 ? "it is" : "they are") and will be left out:</strong>
                             <ul class="mb-0 ps-3">
                                 @foreach (var pr in problems)
                                 {
@@ -379,7 +437,7 @@
                     }
                     @if (review.Files.Count == 0)
                     {
-                        <p class="text-muted p-3 mb-0">@(review.Drafts ? (review.Problems is { Count: > 0 } ? "Nothing else to save." : "The edits cancel out, so there is nothing to save.") : "Nothing has changed yet.")</p>
+                        <p class="text-muted p-3 mb-0">@(review.Drafts ? (review.Skip is { Count: > 0 } ? "No ticked changes to save." : review.Problems is { Count: > 0 } ? "Nothing else to save." : "The edits cancel out, so there is nothing to save.") : "Nothing has changed yet.")</p>
                     }
                     @foreach (var f in review.Files)
                     {
@@ -435,12 +493,91 @@
                         <button type="button" class="btn btn-sm btn-outline-danger me-auto" @onclick="DiscardDrafts">Discard changes</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CloseReview">Keep editing</button>
                         <button type="button" class="btn btn-sm btn-primary" @onclick="SaveDrafts" disabled="@(review.Files.Count == 0)">
-                            <span class="oi oi-check me-1" aria-hidden="true"></span>Save changes
+                            <span class="oi oi-check me-1" aria-hidden="true"></span>@(review.Skip is { Count: > 0 } ? "Save ticked changes" : "Save changes")
                         </button>
                     }
                     else
                     {
                         <button type="button" class="btn btn-sm btn-primary" @onclick="CloseReview">Close</button>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (find is not null)
+    {
+        <div class="se-review-backdrop">
+            <div class="se-review se-find" role="dialog" aria-modal="true" aria-labelledby="se-find-title">
+                <div class="se-review-head">
+                    <h5 id="se-find-title" class="mb-0">Find and replace</h5>
+                    <span class="text-muted small">Changes text learners see on every page. Code and settings are left alone.</span>
+                </div>
+                <form class="se-find-form" @onsubmit="RunFind" @onsubmit:preventDefault>
+                    <div class="row g-2">
+                        <div class="col-sm-6">
+                            <label class="form-label small mb-1" for="se-find-text">Find</label>
+                            <input id="se-find-text" class="form-control form-control-sm" @bind="find.Text" @bind:event="oninput" autocomplete="off" />
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label small mb-1" for="se-replace-text">Replace with</label>
+                            <input id="se-replace-text" class="form-control form-control-sm" @bind="find.Replace" @bind:event="oninput" autocomplete="off" />
+                        </div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-3 align-items-center mt-2 small">
+                        <label class="form-check mb-0"><input type="checkbox" class="form-check-input" @bind="find.MatchCase" /> Match case</label>
+                        <label class="form-check mb-0"><input type="checkbox" class="form-check-input" @bind="find.WholeWord" /> Whole words only</label>
+                        <button type="submit" class="btn btn-sm btn-outline-primary ms-auto" disabled="@(find.Text.Trim().Length == 0)">
+                            <span class="oi oi-magnifying-glass me-1" aria-hidden="true"></span>Find
+                        </button>
+                    </div>
+                </form>
+                <div class="se-review-body">
+                    @if (find.Hits is { } hits)
+                    {
+                        @if (hits.Count == 0)
+                        {
+                            <p class="text-muted p-3 mb-0">“@find.Searched” wasn't found in text learners see.</p>
+                        }
+                        else
+                        {
+                            <div class="se-changes">
+                                <div class="se-changes-head">
+                                    <strong>@(hits.Count >= 500 ? "First 500 places" : $"{hits.Count} {(hits.Count == 1 ? "place" : "places")}")</strong>
+                                    <span class="text-muted small">Untick any place you want to keep as it is.</span>
+                                    @if (hits.Count > 1)
+                                    {
+                                        <button type="button" class="btn btn-sm btn-link p-0 ms-auto" @onclick="() => TickAllHits(find.Skip.Count > 0)">@(find.Skip.Count > 0 ? "Tick all" : "Untick all")</button>
+                                    }
+                                </div>
+                                <ul class="list-unstyled mb-0">
+                                    @foreach (var hit in hits)
+                                    {
+                                        var on = !find.Skip.Contains(hit.Index);
+                                        <li>
+                                            <label class="se-change @(on ? null : "off")">
+                                                <input type="checkbox" class="form-check-input" checked="@on" @onchange="() => ToggleHit(hit.Index)" />
+                                                <span>
+                                                    @(hit.Before.Length > 0 ? "…" + hit.Before : "")<del>@hit.Text</del>@if (on) { <ins>@find.SearchedReplace</ins> }@(hit.After.Length > 0 ? hit.After + "…" : "")
+                                                    <span class="text-muted small">· @hit.Path.Split('/')[^1]</span>
+                                                </span>
+                                            </label>
+                                        </li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+                    }
+                </div>
+                <div class="se-review-foot">
+                    <button type="button" class="btn btn-sm btn-outline-secondary me-auto" @onclick="() => find = null">Close</button>
+                    @if (find.Hits is { Count: > 0 } found)
+                    {
+                        var count = found.Count - find.Skip.Count;
+                        <button type="button" class="btn btn-sm btn-primary" @onclick="ApplyReplace" disabled="@(count == 0 || find.Stale)"
+                                title="@(find.Stale ? "Press Find again first: the search changed" : null)">
+                            <span class="oi oi-check me-1" aria-hidden="true"></span>Replace @count @(count == 1 ? "place" : "places")
+                        </button>
                     }
                 </div>
             </div>
@@ -470,6 +607,7 @@
     private Tab tab = Tab.Preview;
     private bool refreshEditor;
     private int version;
+    private TimeSpan timeOffset;
     private readonly HashSet<string> collapsed = [];
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -485,20 +623,29 @@
         await module.InvokeVoidAsync("init", selfRef, frame, editorHost, lmsHost);
         var prefs = await module.InvokeAsync<Dictionary<string, string?>>("getPrefs");
         advanced = prefs.GetValueOrDefault("advanced") == "1";
+        timeOffset = TimeSpan.FromMinutes(int.TryParse(prefs.GetValueOrDefault("tz"), out var tz) ? tz : 0);
         showTips = prefs.GetValueOrDefault("tips") != "0";
         StateHasChanged();
     }
 
-    private async Task OpenPackage(ScormPackage package)
+    private async Task<bool> OpenPackage(ScormPackage package)
     {
         if (Package is not null)
         {
             Package.Changed -= OnPackageChanged;
+            Package.Expired -= OnPackageExpired;
             Store.Remove(Package.Id);
         }
+        if (!Store.TryAdd(package))
+        {
+            Package = null;
+            Show($"The server already has {Store.Options.MaxOpenCourses} courses open, the most it allows. Try again in a few minutes, or ask someone to close a course they've finished with.", "danger");
+            return false;
+        }
         Package = package;
-        Store.Add(package);
+        package.TimeOffset = timeOffset;
         package.Changed += OnPackageChanged;
+        package.Expired += OnPackageExpired;
         draftPaths = [];
         review = null;
         downloaded = false;
@@ -512,7 +659,23 @@
         var start = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
         await OpenFile(start ?? (package.ManifestPath.Length > 0 ? package.ManifestPath : package.Paths.FirstOrDefault()));
         await SetPreview(start);
+        return true;
     }
+
+    // The server closed the course after it went unused for the idle limit.
+    private void OnPackageExpired() => _ = InvokeAsync(async () =>
+    {
+        if (Package is null) return;
+        Package.Changed -= OnPackageChanged;
+        Package.Expired -= OnPackageExpired;
+        Package = null;
+        review = null;
+        find = null;
+        draftPaths = [];
+        UpdateUnsavedFlag();
+        await module!.InvokeVoidAsync("setUnsaved", false);
+        Show($"This course was closed after {Store.Options.IdleHours:0.#} hours without use, to free memory on the server. Open it again to keep editing.", "warning");
+    });
 
     // Raised from the preview endpoint's request thread as well as from this circuit.
     // Raised for every save, so re-renders are batched: one per 250 ms at most. Re-rendering the
@@ -534,17 +697,23 @@
 
     private async Task OpenZip(InputFileChangeEventArgs e)
     {
+        var maxBytes = Store.Options.MaxUploadMB * 1024L * 1024;
+        if (e.File.Size > maxBytes)
+        {
+            Show($"{e.File.Name} is {FormatSize(e.File.Size)}. The largest course the editor can open is {Store.Options.MaxUploadMB} MB.", "danger");
+            return;
+        }
         loading = true;
         try
         {
-            await using var upload = e.File.OpenReadStream(maxAllowedSize: 1024L * 1024 * 1024);
+            await using var upload = e.File.OpenReadStream(maxAllowedSize: maxBytes);
             using var ms = new MemoryStream();
             await upload.CopyToAsync(ms);
             ms.Position = 0;
             var package = ScormPackage.FromZip(e.File.Name, ms);
             if (draftPaths.Length > 0)
                 Show($"Unsaved preview changes on {string.Join(", ", draftPaths)} were dropped when {e.File.Name} was opened.", "warning");
-            await OpenPackage(package);
+            if (!await OpenPackage(package)) return;
             if (status is null || statusKind != "warning") Show(package.ManifestPath.Length == 0
                 ? $"Opened {e.File.Name}, but it has no imsmanifest.xml, so it is not a SCORM package yet."
                 : $"Opened {e.File.Name} ({package.Paths.Count} files).", package.ManifestPath.Length == 0 ? "warning" : "success");
@@ -649,6 +818,7 @@
             else Package.Delete(path);
             await module!.InvokeVoidAsync("forget", path);
         }
+        Package.ClearHistory();
         if (currentPath is not null && Package.Exists(currentPath)) await OpenFile(currentPath);
         else currentPath = null;
         await module!.InvokeVoidAsync("reloadPreview");
@@ -677,7 +847,7 @@
     public Task OnPreviewNavigated(string path) => InvokeAsync(() => { previewPath = path; StateHasChanged(); });
 
     [JSInvokable]
-    public Task OnDraftsChanged(string[] paths) => InvokeAsync(() => { draftPaths = paths; StateHasChanged(); });
+    public Task OnDraftsChanged(string[] paths) => InvokeAsync(() => { Package?.Touch(); draftPaths = paths; StateHasChanged(); });
 
     [JSInvokable]
     public Task OnReviewRequested() => InvokeAsync(() => ReviewDrafts(null));
@@ -690,8 +860,10 @@
     // One file in the review: the text that will be saved and its diff against what is saved now.
     private sealed record ReviewFile(string Path, string Label, string? NewText, TextDiff.Result? Diff, string? Warning);
 
+    // Skip holds the edits the user unticked; Log is the change log, shown in the package review.
     private sealed record Review(bool Drafts, List<ReviewFile> Files, string? Note, Func<Task>? Then,
-        IReadOnlyList<EditMapper.Problem>? Problems = null, EditMapper.Edit[]? Edits = null, HashSet<int>? ChangeAll = null);
+        IReadOnlyList<EditMapper.Problem>? Problems = null, EditMapper.Edit[]? Edits = null, HashSet<int>? ChangeAll = null,
+        HashSet<int>? Skip = null, IReadOnlyList<ScormPackage.LogEntry>? Log = null);
 
     // Runs an action that would reload the preview. With unsaved preview edits it opens the
     // review first, and runs the action once they are saved or discarded.
@@ -705,27 +877,41 @@
     {
         if (Package is null || module is null) return;
         var edits = await module.InvokeAsync<EditMapper.Edit[]>("getDrafts");
-        review = BuildReview(edits, [], then);
+        review = BuildReview(edits, [], [], then);
         StateHasChanged();
     }
 
-    private Review BuildReview(EditMapper.Edit[] edits, HashSet<int> changeAll, Func<Task>? then)
+    private Review BuildReview(EditMapper.Edit[] edits, HashSet<int> changeAll, HashSet<int> skip, Func<Task>? then)
     {
-        var result = EditMapper.Apply(Package!, edits, changeAll);
+        var result = EditMapper.Apply(Package!, edits, changeAll, skip);
         var files = result.Files
             .Select(f => new ReviewFile(f.Path, "changed by your edits", f.NewText, TextDiff.Compare(f.OldDisplay, f.NewDisplay),
                 f.Notes.Count == 0 ? null : string.Join(" ", f.Notes)))
             .ToList();
         return new Review(true, files,
             then is null ? null : "Save or discard these changes first. The preview reloads afterwards, which would lose them.", then,
-            result.Problems, edits, changeAll);
+            result.Problems, edits, changeAll, skip);
+    }
+
+    private void ToggleEdit(int edit)
+    {
+        if (review is not { Edits: { } edits, ChangeAll: { } all, Skip: { } skip }) return;
+        HashSet<int> next = [.. skip];
+        if (!next.Remove(edit)) next.Add(edit);
+        review = BuildReview(edits, all, next, review.Then);
+    }
+
+    private void TickAll(List<int> listed, bool tick)
+    {
+        if (review is not { Edits: { } edits, ChangeAll: { } all }) return;
+        review = BuildReview(edits, all, tick ? [] : [.. listed], review.Then);
     }
 
     // The user chose to change every copy of a text found in several places.
     private void ChangeAllPlaces(int edit)
     {
         if (review is not { Edits: { } edits, ChangeAll: { } all }) return;
-        review = BuildReview(edits, [.. all, edit], review.Then);
+        review = BuildReview(edits, [.. all, edit], review.Skip ?? [], review.Then);
     }
 
     private void ReviewPackage()
@@ -744,21 +930,28 @@
             }
             files.Add(new ReviewFile(path, label, null, TextDiff.Compare(original ?? "", exists ? Package.ReadText(path) : ""), null));
         }
-        review = new Review(false, files, draftPaths.Length > 0 ? "Unsaved preview edits are not included until you save them." : null, null);
+        review = new Review(false, files, draftPaths.Length > 0 ? "Unsaved preview edits are not included until you save them." : null, null,
+            Log: Package.ChangeLog);
     }
 
     private async Task SaveDrafts()
     {
         if (Package is null || review is not { Drafts: true } r) return;
-        foreach (var f in r.Files)
+        var saved = Enumerable.Range(0, r.Edits?.Length ?? 0)
+            .Where(i => r.Skip?.Contains(i) != true && EditMapper.Changes(r.Edits![i]) && r.Problems?.Any(pr => pr.Edit == i) != true)
+            .Select(i => (r.Edits![i].Path, EditMapper.Summarize(r.Edits[i])))
+            .ToList();
+        var label = saved.Count == 1 ? saved[0].Item2 : $"{saved.Count} changes on {string.Join(", ", saved.Select(x => x.Path.Split('/')[^1]).Distinct())}";
+        Package.Step(label, r.Files.Select(f => f.Path), () =>
         {
-            Package.WriteText(f.Path, f.NewText!);
-            await module!.InvokeVoidAsync("updateDoc", f.Path, f.NewText);
-        }
+            foreach (var f in r.Files) Package.WriteText(f.Path, f.NewText!);
+        }, saved);
+        foreach (var f in r.Files) await module!.InvokeVoidAsync("updateDoc", f.Path, f.NewText);
         review = null;
         await module!.InvokeVoidAsync("clearDrafts", r.Then is null);
         draftPaths = [];
-        Show($"Saved {string.Join(", ", r.Files.Select(f => f.Path))}.", "success");
+        var left = r.Skip?.Count ?? 0;
+        Show($"Saved {string.Join(", ", r.Files.Select(f => f.Path))}.{(left > 0 ? $" {left} unticked {(left == 1 ? "change was" : "changes were")} thrown away." : "")} Press Undo to take it back.", "success");
         if (r.Then is not null) await r.Then();
     }
 
@@ -775,12 +968,99 @@
 
     private void CloseReview() => review = null;
 
+    /* ---------- undo ---------- */
+
+    private Task UndoLast() => AfterDrafts(async () =>
+    {
+        if (Package is null) return;
+        var label = Package.UndoLabel;
+        var (refused, paths) = Package.Undo();
+        if (refused is not null) { Show(refused, "warning"); return; }
+        await SyncEditors(paths);
+        Show($"Undid: {label}", "info");
+    });
+
+    // After files changed on the server, puts their new text in the code editor and reloads the preview.
+    private async Task SyncEditors(IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            if (Package!.Exists(path) && ScormPackage.IsText(path)) await module!.InvokeVoidAsync("updateDoc", path, Package.ReadText(path));
+            else await module!.InvokeVoidAsync("forget", path);
+        }
+        if (currentPath is not null && !Package!.Exists(currentPath)) currentPath = null;
+        await module!.InvokeVoidAsync("reloadPreview");
+    }
+
+    /* ---------- find and replace ---------- */
+
+    private sealed class FindState
+    {
+        public string Text { get; set; } = "";
+        public string Replace { get; set; } = "";
+        public bool MatchCase { get; set; }
+        public bool WholeWord { get; set; }
+        public IReadOnlyList<EditMapper.Hit>? Hits { get; set; }
+        public HashSet<int> Skip { get; set; } = [];
+        public string Searched { get; set; } = "";
+        public string SearchedReplace { get; set; } = "";
+        public (bool, bool) SearchedOptions { get; set; }
+
+        // The list shows an earlier search; replacing would use different words.
+        public bool Stale => Text != Searched || Replace != SearchedReplace || (MatchCase, WholeWord) != SearchedOptions;
+    }
+
+    private FindState? find;
+
+    private Task OpenFind() => AfterDrafts(() =>
+    {
+        find ??= new FindState();
+        return Task.CompletedTask;
+    });
+
+    private void RunFind()
+    {
+        if (Package is null || find is null || find.Text.Trim().Length == 0) return;
+        find.Hits = EditMapper.FindReplace(Package, find.Text, find.Replace, find.MatchCase, find.WholeWord).Hits;
+        find.Skip = [];
+        find.Searched = find.Text;
+        find.SearchedReplace = find.Replace;
+        find.SearchedOptions = (find.MatchCase, find.WholeWord);
+    }
+
+    private void ToggleHit(int index)
+    {
+        if (find is not null && !find.Skip.Remove(index)) find.Skip.Add(index);
+    }
+
+    private void TickAllHits(bool tick)
+    {
+        if (find?.Hits is { } hits) find.Skip = tick ? [] : [.. hits.Select(h => h.Index)];
+    }
+
+    private async Task ApplyReplace()
+    {
+        if (Package is null || find is not { Hits.Count: > 0, Stale: false }) return;
+        var (result, hits) = EditMapper.FindReplace(Package, find.Searched, find.SearchedReplace, find.MatchCase, find.WholeWord, find.Skip);
+        var count = hits.Count - find.Skip.Count;
+        if (result.Files.Count == 0) { Show("Nothing was replaced.", "info"); return; }
+        var label = $"Replaced “{find.Searched}” with “{find.SearchedReplace}” in {count} {(count == 1 ? "place" : "places")}";
+        Package.Step(label, result.Files.Select(f => f.Path), () =>
+        {
+            foreach (var f in result.Files) Package.WriteText(f.Path, f.NewText);
+        }, result.Files.Select(f => (f.Path, $"Replaced “{find.Searched}” with “{find.SearchedReplace}” ({hits.Count(h => h.Path == f.Path && !find.Skip.Contains(h.Index))}×)")));
+        await SyncEditors(result.Files.Select(f => f.Path));
+        find = null;
+        Show(label + ". Press Undo to take it back.", "success");
+    }
+
     private async Task Reindent() => await module!.InvokeVoidAsync("reindent");
 
     private async Task RevertFile()
     {
         if (Package is null || currentPath is null) return;
-        Package.Revert(currentPath);
+        var path = currentPath;
+        Package.Step($"Reverted {path}", [path], () => Package.Revert(path), [(path, "Put back as it was in the opened course")]);
         if (ScormPackage.IsText(currentPath))
             await module!.InvokeVoidAsync("openText", currentPath, Package.ReadText(currentPath), ModeOf(currentPath), true);
         await module!.InvokeVoidAsync("reloadPreview");
@@ -796,7 +1076,7 @@
         var text = ScormPackage.IsHtml(path)
             ? "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>New page</title>\n</head>\n<body>\n  <h1>New page</h1>\n</body>\n</html>\n"
             : "";
-        Package.WriteText(path, text);
+        Package.Step($"Added {path}", [path], () => Package.WriteText(path, text), [(path, "Added")]);
         newPath = null;
         await EditFile(path);
     }
@@ -805,14 +1085,15 @@
     {
         if (Package is null) return;
         var dir = currentPath is null ? "" : ScormPackage.DirOf(currentPath);
-        var count = 0;
+        var uploads = new List<(string Path, byte[] Data)>();
         foreach (var file in e.GetMultipleFiles(500))
+            uploads.Add((ScormPackage.Normalize($"{dir}/{file.Name}"), await ReadAll(file)));
+        var count = uploads.Count;
+        Package.Step($"Added {count} file{(count == 1 ? "" : "s")}", uploads.Select(u => u.Path), () =>
         {
-            var path = ScormPackage.Normalize($"{dir}/{file.Name}");
-            Package.Write(path, await ReadAll(file));
-            await module!.InvokeVoidAsync("forget", path);
-            count++;
-        }
+            foreach (var (path, data) in uploads) Package.Write(path, data);
+        }, uploads.Select(u => (u.Path, "Added or replaced")));
+        foreach (var (path, _) in uploads) await module!.InvokeVoidAsync("forget", path);
         await module!.InvokeVoidAsync("reloadPreview");
         Show($"Added {count} file{(count == 1 ? "" : "s")} to {(dir.Length == 0 ? "the package root" : dir)}.", "success");
     }
@@ -820,7 +1101,9 @@
     private async Task ReplaceFile(InputFileChangeEventArgs e)
     {
         if (Package is null || currentPath is null) return;
-        Package.Write(currentPath, await ReadAll(e.File));
+        var path = currentPath;
+        var data = await ReadAll(e.File);
+        Package.Step($"Replaced {path}", [path], () => Package.Write(path, data), [(path, $"Replaced with {e.File.Name}")]);
         await module!.InvokeVoidAsync("reloadPreview");
         Show($"Replaced {currentPath}.", "success");
     }
@@ -832,7 +1115,7 @@
         if (to.Length == 0 || to == currentPath) return;
         if (Package.Exists(to)) { Show($"{to} already exists.", "warning"); return; }
         var from = currentPath;
-        Package.Rename(from, to);
+        Package.Step($"Renamed {from}", [from, to], () => Package.Rename(from, to), [(to, $"Renamed from {from}")]);
         await module!.InvokeVoidAsync("forget", from);
         if (previewPath == from) await SetPreview(to);
         await OpenFile(to);
@@ -844,7 +1127,7 @@
         if (Package is null || currentPath is null) return;
         if (!confirmDelete) { confirmDelete = true; return; }
         var path = currentPath;
-        Package.Delete(path);
+        Package.Step($"Deleted {path}", [path], () => Package.Delete(path), [(path, "Deleted")]);
         await module!.InvokeVoidAsync("forget", path);
         currentPath = null;
         confirmDelete = false;
@@ -855,7 +1138,9 @@
     private async Task SyncManifest()
     {
         if (Package is null) return;
-        var count = Package.SyncManifestFileList();
+        int? count = null;
+        Package.Step("Updated the manifest's file list", [Package.ManifestPath], () => count = Package.SyncManifestFileList(),
+            [(Package.ManifestPath, "Updated the list of files")]);
         if (count is null) { Show("Open a package with a valid imsmanifest.xml and at least one resource first.", "warning"); return; }
         if (currentPath == Package.ManifestPath)
             await module!.InvokeVoidAsync("openText", currentPath, Package.ReadText(currentPath), ModeOf(currentPath), true);
@@ -999,6 +1284,7 @@
         if (Package is not null)
         {
             Package.Changed -= OnPackageChanged;
+            Package.Expired -= OnPackageExpired;
             Store.Remove(Package.Id);
         }
         if (module is not null)

@@ -35,7 +35,21 @@ public static class ScormPreviewEndpoints
             target = package.Resolve(target) ?? target;
             using var ms = new MemoryStream();
             await request.Body.CopyToAsync(ms);
-            package.Write(target, ms.ToArray());
+            var data = ms.ToArray();
+            // An image swapped from the preview is one undo step; Code tab saves arrive every few
+            // keystrokes, so they are only logged (the code editor has its own undo).
+            if (request.Headers["X-Scorm-Editor-Step"].FirstOrDefault() is { Length: > 0 } step)
+            {
+                var label = Uri.UnescapeDataString(step);
+                package.Step(label, [target], () => package.Write(target, data), [(target, label)]);
+            }
+            else
+            {
+                var existed = package.Exists(target);
+                var same = package.Read(target) is { } current && current.AsSpan().SequenceEqual(data);
+                package.Write(target, data);
+                if (!same) package.LogChange(target, existed ? "Edited in the Code tab" : "Added");
+            }
             return Results.NoContent();
         }).DisableAntiforgery();
 

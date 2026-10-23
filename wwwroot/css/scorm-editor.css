@@ -359,6 +359,24 @@
 .se-review-body { overflow: auto; flex: 1; min-height: 0; padding: 12px 16px; }
 .se-plus { color: #1a7f37; font-weight: 600; }
 .se-minus { color: #cf222e; font-weight: 600; }
+/* Ticked list of changes (review) and of places found (find and replace). */
+.se-changes { border: 1px solid #dde2ea; border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+.se-changes-head {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+    background: #f4f6f9; border-bottom: 1px solid #dde2ea; padding: 6px 10px;
+}
+.se-changes ul { max-height: 40vh; overflow: auto; }
+.se-changes li + li { border-top: 1px solid #eef1f5; }
+.se-change { display: flex; gap: 8px; align-items: flex-start; padding: 6px 10px; margin: 0; cursor: pointer; font-size: .875rem; overflow-wrap: anywhere; }
+.se-change:hover { background: #f8f9fb; }
+.se-change .form-check-input { flex: none; margin-top: .2em; }
+.se-change.off > span { color: #8a94a3; text-decoration: line-through; }
+.se-change del { background: #ffe1e1; text-decoration: line-through; }
+.se-change ins { background: #d9f5df; text-decoration: none; margin-left: 2px; }
+.se-log li { padding: 4px 10px; font-size: .85rem; overflow-wrap: anywhere; }
+.se-find { max-width: 760px; }
+.se-find-form { padding: 12px 16px; border-bottom: 1px solid #dde2ea; }
+
 .se-diff-file { border: 1px solid #dde2ea; border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
 .se-diff-file > header {
     display: flex;
