@@ -5,14 +5,24 @@
 
 <PageTitle>SCORM Editor</PageTitle>
 
-<div class="scorm-editor">
+<div class="scorm-editor @(advanced ? "advanced" : "simple")">
+    @* Dropping a course .zip anywhere on the editor opens it: while a file is dragged over the page
+       this invisible file input covers it and receives the drop. *@
+    <label class="se-drop" aria-hidden="true">
+        <span class="se-drop-hint"><span class="oi oi-data-transfer-upload" aria-hidden="true"></span> Drop the course .zip to open it</span>
+        <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="se-drop-input" tabindex="-1" />
+    </label>
+
     <div class="se-toolbar">
         <div class="se-title">
             <h3 class="mb-0">@(Package?.Manifest?.CourseTitle is { Length: > 0 } t ? t : "SCORM Editor")</h3>
             @if (Package is not null)
             {
                 <span class="text-muted small text-truncate" title="@Package.FileName">@Package.FileName</span>
-                <span class="badge text-bg-primary">@(Package.Manifest?.Version ?? "No manifest")</span>
+                @if (advanced)
+                {
+                    <span class="badge text-bg-primary">@(Package.Manifest?.Version ?? "No manifest")</span>
+                }
                 @if (Package.ChangeCount > 0)
                 {
                     <button type="button" class="badge text-bg-warning border-0" title="See every change since the package was opened" @onclick="ReviewPackage">
@@ -23,18 +33,40 @@
         </div>
         <div class="se-actions">
             <label class="btn btn-sm btn-outline-primary mb-0 @(loading ? "disabled" : "")">
-                <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open package…")
+                <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open course…")
                 <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
             </label>
-            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="LoadSample">Load sample</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="LoadSample" title="Open a small example course to try the editor">Try a sample</button>
             @if (Package is not null)
             {
-                <button type="button" class="btn btn-sm btn-primary" @onclick="Export">
-                    <span class="oi oi-data-transfer-download me-1" aria-hidden="true"></span>Export .zip
+                @if (Package.ChangeCount > 0)
+                {
+                    <button type="button" class="btn btn-sm @(confirmStartOver ? "btn-danger" : "btn-outline-danger")" @onclick="StartOver"
+                            title="Undo every change and go back to the course as it was when you opened it">
+                        <span class="oi oi-action-undo me-1" aria-hidden="true"></span>@(confirmStartOver ? "Click again to undo everything" : "Start over")
+                    </button>
+                }
+                <button type="button" class="btn btn-sm btn-primary" @onclick="Export" title="Download the edited course as a .zip to upload to your LMS">
+                    <span class="oi oi-data-transfer-download me-1" aria-hidden="true"></span>Download course
                 </button>
             }
+            <div class="form-check form-switch mb-0 small ms-1 align-self-center" title="Show the file list, code editor, manifest tools and LMS test panel">
+                <input class="form-check-input" type="checkbox" id="se-advanced" checked="@advanced" @onchange="ToggleAdvanced" />
+                <label class="form-check-label" for="se-advanced">Advanced</label>
+            </div>
         </div>
     </div>
+
+    @if (showTips && Package is not null)
+    {
+        <ol class="se-tips" aria-label="How to edit">
+            <li><span class="se-step">1</span>Click any text in the page and type.</li>
+            <li><span class="se-step">2</span>Right-click a link, video or image to change it.</li>
+            <li><span class="se-step">3</span>Press <strong>Review and save</strong> to check your changes.</li>
+            <li><span class="se-step">4</span>Press <strong>Download course</strong> and upload it to your LMS.</li>
+            <li class="ms-auto"><button type="button" class="btn btn-sm btn-link p-0" @onclick="HideTips">Hide tips</button></li>
+        </ol>
+    }
 
     @if (status is not null)
     {
@@ -58,15 +90,36 @@
         }
         <section class="se-pane se-side" aria-label="Package" hidden="@(!sideOpen)">
             <div class="se-pane-header">
-                <span class="flex-grow-1">Course structure</span>
+                <span class="flex-grow-1">@(advanced ? "Course structure" : "Course pages")</span>
                 <button type="button" class="btn btn-sm btn-link p-0" title="Hide this pane to make the editor wider" aria-label="Hide course structure" @onclick="ToggleSide">
                     <span class="oi oi-chevron-left" aria-hidden="true"></span>
                 </button>
             </div>
             <div class="se-pane-body">
-                @if (Package?.Manifest is null)
+                @if (Package?.Manifest is null || (!advanced && Package.Manifest.Error is not null))
                 {
-                    <p class="small text-muted px-2 mb-2">@(Package is null ? "Open a package to begin." : "No imsmanifest.xml in this package.")</p>
+                    @if (Package is null)
+                    {
+                        <p class="small text-muted px-2 mb-2">Open a course to begin.</p>
+                    }
+                    else if (!advanced)
+                    {
+                        @* Without a readable manifest, list the package's pages instead. *@
+                        <ol class="se-org">
+                            @foreach (var (pg, i) in Package.Paths.Where(ScormPackage.IsHtml).Select((p, i) => (p, i)))
+                            {
+                                <li>
+                                    <button type="button" class="@(pg == previewPath ? "current" : null)" title="@pg" @onclick="() => PreviewPage(pg)">
+                                        <span class="se-ix">@(i + 1)</span><span>@pg</span>
+                                    </button>
+                                </li>
+                            }
+                        </ol>
+                    }
+                    else
+                    {
+                        <p class="small text-muted px-2 mb-2">No imsmanifest.xml in this package.</p>
+                    }
                 }
                 else if (Package.Manifest.Error is not null)
                 {
@@ -87,23 +140,29 @@
                             </li>
                         }
                     </ol>
-                    <dl class="se-meta">
-                        <dt>Launch</dt><dd>@(Package.Manifest.LaunchPath ?? "—")</dd>
-                        <dt>Identifier</dt><dd>@Package.Manifest.Identifier</dd>
-                        <dt>Resources</dt><dd>@Package.Manifest.Resources.Count</dd>
-                    </dl>
+                    @if (advanced)
+                    {
+                        <dl class="se-meta">
+                            <dt>Launch</dt><dd>@(Package.Manifest.LaunchPath ?? "—")</dd>
+                            <dt>Identifier</dt><dd>@Package.Manifest.Identifier</dd>
+                            <dt>Resources</dt><dd>@Package.Manifest.Resources.Count</dd>
+                        </dl>
+                    }
                 }
 
-                <div class="se-section-label">
-                    <span>Files</span>
-                    @if (Package is not null) { <span>@Package.Paths.Count</span> }
-                </div>
-                @if (Package is not null)
+                @if (advanced)
                 {
-                    <ul class="se-tree">@RenderFolder(TreeFor(Package.Paths), "")</ul>
+                    <div class="se-section-label">
+                        <span>Files</span>
+                        @if (Package is not null) { <span>@Package.Paths.Count</span> }
+                    </div>
+                    @if (Package is not null)
+                    {
+                        <ul class="se-tree">@RenderFolder(TreeFor(Package.Paths), "")</ul>
+                    }
                 }
             </div>
-            @if (Package is not null)
+            @if (Package is not null && advanced)
             {
                 <div class="se-side-footer">
                     <form class="input-group input-group-sm" @onsubmit="AddFile" @onsubmit:preventDefault>
@@ -140,7 +199,7 @@
                     <span class="oi oi-eye me-1" aria-hidden="true"></span>Preview
                     @if (previewPath is not null) { <span class="se-tab-file">@previewPath.Split('/')[^1]</span> }
                 </button>
-                <button type="button" role="tab" class="se-tab @(tab == Tab.Code ? "active" : null)" aria-selected="@(tab == Tab.Code)" @onclick="() => ShowTab(Tab.Code)">
+                <button type="button" role="tab" class="se-tab @(tab == Tab.Code ? "active" : null)" aria-selected="@(tab == Tab.Code)" @onclick="() => ShowTab(Tab.Code)" hidden="@(!advanced)">
                     <span class="oi oi-code me-1" aria-hidden="true"></span>Code
                     @if (currentPath is not null)
                     {
@@ -184,13 +243,16 @@
                     </button>
                     <button type="button" class="btn @(previewMode == PreviewMode.Interact ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetMode(PreviewMode.Interact)"
                             title="Use the course as a learner: links, buttons and quizzes work">
-                        <span class="oi oi-media-play me-1" aria-hidden="true"></span>Interact
+                        <span class="oi oi-media-play me-1" aria-hidden="true"></span>@(advanced ? "Interact" : "Try it")
                     </button>
                 </div>
-                <div class="form-check form-switch mb-0 small">
-                    <input class="form-check-input" type="checkbox" id="se-live" checked="@live" @onchange="ToggleLive" />
-                    <label class="form-check-label" for="se-live">Live</label>
-                </div>
+                @if (advanced)
+                {
+                    <div class="form-check form-switch mb-0 small">
+                        <input class="form-check-input" type="checkbox" id="se-live" checked="@live" @onchange="ToggleLive" />
+                        <label class="form-check-label" for="se-live">Live</label>
+                    </div>
+                }
                 </div>
             @if (previewMode == PreviewMode.Edit)
             {
@@ -210,11 +272,11 @@
                         @if (draftPaths.Length > 0)
                         {
                             <strong>Unsaved changes</strong>
-                            @($" on {string.Join(", ", draftPaths)}. Review them to save.")
+                            @(advanced ? $" on {string.Join(", ", draftPaths)}. Review them to save." : " (highlighted in yellow). Review them to save.")
                         }
                         else
                         {
-                            @("Click text and type. Right-click a link, embed or image to edit it. Switch to Interact to click through the course.")
+                            @($"Click text and type. Right-click a link, embed or image to edit it. Switch to {(advanced ? "Interact" : "Try it")} to click through the course.")
                         }
                     </span>
                     @if (draftPaths.Length > 0)
@@ -229,7 +291,7 @@
             <div class="se-stage @(frameWidth is null ? "" : "narrow")">
                 <iframe @ref="frame" title="Course preview" style="@(frameWidth is null ? "" : $"width:{frameWidth}px")"></iframe>
             </div>
-            <div class="se-lms" @ref="lmsHost"></div>
+            <div class="se-lms" @ref="lmsHost" hidden="@(!advanced)"></div>
             </div>
 
             @* CodeMirror owns the host element; Blazor only renders the overlay beside it. *@
@@ -385,6 +447,7 @@
     private enum PreviewMode { Edit, Interact }
     private PreviewMode previewMode = PreviewMode.Edit;
     private string[] draftPaths = [];
+    private bool advanced, showTips = true, confirmStartOver, downloaded;
     private bool sideOpen = true;
     private Review? review;
     private int? frameWidth;
@@ -405,7 +468,11 @@
         module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/scorm-editor.js");
         selfRef = DotNetObjectReference.Create(this);
         await module.InvokeVoidAsync("init", selfRef, frame, editorHost, lmsHost);
+        var prefs = await module.InvokeAsync<Dictionary<string, string?>>("getPrefs");
+        advanced = prefs.GetValueOrDefault("advanced") == "1";
+        showTips = prefs.GetValueOrDefault("tips") != "0";
         await OpenPackage(SamplePackage.Create());
+        StateHasChanged();
     }
 
     private async Task OpenPackage(ScormPackage package)
@@ -420,10 +487,13 @@
         package.Changed += OnPackageChanged;
         draftPaths = [];
         review = null;
+        downloaded = false;
+        confirmStartOver = false;
         currentPath = null;
         tab = Tab.Preview;
         collapsed.Clear();
         await module!.InvokeVoidAsync("setPackage", package.Id);
+        UpdateUnsavedFlag();
 
         var start = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
         await OpenFile(start ?? (package.ManifestPath.Length > 0 ? package.ManifestPath : package.Paths.FirstOrDefault()));
@@ -441,6 +511,9 @@
         {
             renderQueued = 0;
             version++;
+            downloaded = false;
+            confirmStartOver = false;
+            UpdateUnsavedFlag();
             StateHasChanged();
         }));
     }
@@ -539,6 +612,41 @@
 
     private async Task Exec(string command) => await module!.InvokeVoidAsync("exec", command);
 
+    private void ToggleAdvanced(ChangeEventArgs e)
+    {
+        advanced = e.Value is true;
+        if (!advanced) ShowTab(Tab.Preview);
+        _ = module?.InvokeVoidAsync("setPref", "advanced", advanced ? "1" : "0").AsTask();
+    }
+
+    private void HideTips()
+    {
+        showTips = false;
+        _ = module?.InvokeVoidAsync("setPref", "tips", "0").AsTask();
+    }
+
+    // Puts every file back as it was in the opened package. Asks once by turning the button red.
+    private Task StartOver() => AfterDrafts(async () =>
+    {
+        if (Package is null) return;
+        if (!confirmStartOver) { confirmStartOver = true; return; }
+        confirmStartOver = false;
+        foreach (var path in Package.ChangedPaths)
+        {
+            if (Package.HasOriginal(path)) Package.Revert(path);
+            else Package.Delete(path);
+            await module!.InvokeVoidAsync("forget", path);
+        }
+        if (currentPath is not null && Package.Exists(currentPath)) await OpenFile(currentPath);
+        else currentPath = null;
+        await module!.InvokeVoidAsync("reloadPreview");
+        Show("Undid every change. The course is back to how it was when you opened it.", "info");
+    });
+
+    // The browser asks before closing the tab while there are changes not yet downloaded.
+    private void UpdateUnsavedFlag() =>
+        _ = module?.InvokeVoidAsync("setUnsaved", Package is { ChangeCount: > 0 } && !downloaded).AsTask();
+
     private void ToggleSide()
     {
         sideOpen = !sideOpen;
@@ -549,6 +657,8 @@
     {
         await module!.InvokeVoidAsync("flush");
         await module!.InvokeVoidAsync("download", $"scorm-export/{Package!.Id}");
+        downloaded = true;
+        UpdateUnsavedFlag();
     });
 
     [JSInvokable]
