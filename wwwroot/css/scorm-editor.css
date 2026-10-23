@@ -446,3 +446,16 @@
 .se-editbar { flex-wrap: nowrap; }
 .se-edit-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .se-editbar > .btn { flex-shrink: 0; }
+
+/* Start screen, before a course is opened */
+.se-start {
+    margin: 48px auto;
+    max-width: 560px;
+    padding: 40px 32px;
+    text-align: center;
+    background: #fff;
+    border: 2px dashed #cfe0f3;
+    border-radius: 10px;
+}
+.se-start-icon { font-size: 2.4rem; color: #1b6ec2; display: block; margin-bottom: 12px; }
+.se-grid[hidden] { display: none; }

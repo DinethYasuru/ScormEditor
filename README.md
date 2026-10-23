@@ -8,7 +8,7 @@ A Blazor Server app (.NET 8) for editing SCORM packages, styled to match the IFS
 dotnet run
 ```
 
-Then open http://localhost:5136/editor. The editor opens with a small sample course; use **Open package…** to load your own SCORM .zip.
+Then open http://localhost:5136/editor. Choose your course .zip (or drag it onto the page) to start editing.
 
 ## What it does
 
@@ -21,7 +21,7 @@ The package panel sits on the left and folds into a thin rail (the arrow in its 
 - **Code**: CodeMirror editor for HTML, CSS, JavaScript, JSON and XML. Edits save as you type; the preview reloads when you switch back to it (turn off **Live** to stop that).
 - **Edit in the preview**: the Preview tab opens in **Edit** mode, so you can click any text in the page and type straight away. A toolbar gives bold, italic, underline, links, remove formatting, undo and redo. Frames inside the page (Rise, Storyline and most LMS wrappers put the content in an inner iframe) are editable too. Switch to **Interact** to click through the course as a learner.
 - **Right-click menu**: on a link, edit its address, text and new-tab setting, open it, copy it or remove it; on selected text, add a link; on an embed (iframe, video, audio, object), edit its URL (and an iframe's title); on an image, replace it or edit its alt text; on any element, edit its HTML. Embeds from other sites get a yellow dashed outline in Edit mode, as they cannot be clicked into.
-- **Review before saving**: preview edits are drafts until you save them. **Review and save** (or Ctrl+S) shows a line-by-line diff of each edited page's source, with the changed words highlighted, then **Save changes**, **Keep editing** or **Discard changes**. Only what you changed is written. The editor records each element you edit and looks for the change in the page's HTML, or, for courses whose pages are built by a script, in the data the script reads: JavaScript and JSON files (Storyline) and base64-encoded course data inside a page (Rise), which the review shows decoded. Text found in several files (a course title in the data, the page `<title>` and the manifest) is changed in all of them, and the review says so. An edit that can't be found is listed and left out, and the rendered page itself is never saved, so labels and markup a course's scripts add (such as Rise's "Unstarted") stay out of your files. Anything that would reload the preview (another page, Interact, Reload, Export, opening the sample) asks you to save or discard first. The **changed files** badge next to the course title shows every change since the package was opened.
+- **Review before saving**: preview edits are drafts until you save them. **Review and save** (or Ctrl+S) shows a line-by-line diff of each edited page's source, with the changed words highlighted, then **Save changes**, **Keep editing** or **Discard changes**. Only what you changed is written. The editor records each element you edit and looks for the change in the page's HTML, or, for courses whose pages are built by a script, in the data the script reads: JavaScript and JSON files (Storyline) and base64-encoded course data inside a page (Rise), which the review shows decoded. Text found in several files (a course title in the data, the page `<title>` and the manifest) is changed in all of them, and the review says so. An edit that can't be found is listed and left out, and the rendered page itself is never saved, so labels and markup a course's scripts add (such as Rise's "Unstarted") stay out of your files. Anything that would reload the preview (another page, Interact, Reload, Export, opening another course) asks you to save or discard first. The **changed files** badge next to the course title shows every change since the package was opened.
 - **LMS panel**: the preview answers SCORM 1.2 (`window.API`) and 2004 (`window.API_1484_11`) calls, showing status, score, location and a log of every call.
 - **Sync manifest**: rewrites the launch resource's `<file>` list so it names every file in the package.
 - **Export .zip**: downloads the edited package with `imsmanifest.xml` as the first entry.
@@ -34,7 +34,7 @@ Open packages are kept in memory (`ScormPackageStore`) and served from `/scorm-p
 
 The editor is self-contained, so it can be copied into `IfsContentPortal`:
 
-- `Services/` (package model, manifest parser, store, preview endpoints, sample)
+- `Services/` (package model, manifest parser, store, preview endpoints, edit mapping and diff)
 - `Components/Pages/ScormEditorPage.razor`
 - `wwwroot/js/scorm-editor.js`, `wwwroot/css/scorm-editor.css`, `wwwroot/lib/codemirror/`
 - In `Program.cs`: `builder.Services.AddSingleton<ScormPackageStore>();` and `app.MapScormPreview();`

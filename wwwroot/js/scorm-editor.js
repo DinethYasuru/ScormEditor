@@ -870,7 +870,7 @@ const errors = { "0": "No error", "101": "General exception", "301": "Not initia
 function defaults() {
     return {
         "cmi.core.student_id": "learner-001",
-        "cmi.core.student_name": "Learner, Sample",
+        "cmi.core.student_name": "Learner, Preview",
         "cmi.core.lesson_status": "not attempted",
         "cmi.core.lesson_location": "",
         "cmi.core.entry": "ab-initio",
@@ -885,7 +885,7 @@ function defaults() {
         "cmi.launch_data": "",
         "cmi._version": "1.0",
         "cmi.learner_id": "learner-001",
-        "cmi.learner_name": "Learner, Sample",
+        "cmi.learner_name": "Learner, Preview",
         "cmi.completion_status": "unknown",
         "cmi.success_status": "unknown",
         "cmi.location": "",
