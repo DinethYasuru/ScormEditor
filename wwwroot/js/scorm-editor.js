@@ -449,13 +449,30 @@ export function exec(command) {
     reportDrafts();
 }
 
+// Offsets in an element's text where markup sits (bold, links, spans), so the server can match
+// the text where the course's data writes it with that markup in between.
+function textBreaks(root) {
+    const breaks = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (offset > 0) breaks.push(offset);
+        offset += n.data.length;
+    }
+    return breaks;
+}
+
 // Edited elements for the review: their HTML and text before the first edit and now, and the
 // attributes that changed when the element's structure is the same.
 export function getDrafts() {
     const out = [];
+    const live = [...records.values()].filter((r) => r.el.isConnected);
     for (const r of records.values()) {
         if (!r.el.isConnected) {
-            out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: null, oldText: r.oldText, newText: null, attrs: [], structural: r.structural, lost: true });
+            // Pages built with React and similar redraw elements; when the redrawn element was
+            // edited again it has its own record, so the old one is not worth reporting.
+            if (!live.some((x) => x.path === r.path && x.oldText === r.oldText))
+                out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: null, oldText: r.oldText, newText: null, attrs: [], structural: r.structural, lost: true, breaks: [] });
             continue;
         }
         const c = clean(r.el);
@@ -476,7 +493,7 @@ export function getDrafts() {
             });
             // Elements are the same, so whatever else changed is text.
         }
-        out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: c.outerHTML, oldText: r.oldText, newText: c.textContent, attrs, structural, lost: false });
+        out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: c.outerHTML, oldText: r.oldText, newText: c.textContent, attrs, structural, lost: false, breaks: textBreaks(tpl.content) });
     }
     return out;
 }
