@@ -61,6 +61,7 @@ public static class SamplePackage
       <li>Close doors behind you to slow the spread of smoke.</li>
       <li>Go straight to the assembly point and wait for the fire warden.</li>
     </ul>
+    <p>Read more in the <a href="https://www.gov.uk/workplace-fire-safety-your-responsibilities" target="_blank" rel="noopener">workplace fire safety guidance</a>.</p>
     <a class="next" href="quiz.html">Take the check →</a>
   </main>
   <script>Course.start("intro");</script>

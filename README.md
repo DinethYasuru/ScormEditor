@@ -12,19 +12,21 @@ Then open http://localhost:5136/editor. The editor opens with a small sample cou
 
 ## What it does
 
-The package panel sits on the left; the work area has two tabs, **Preview** and **Code**. Clicking a file opens it in the Code tab; the eye icon next to a page, or a course item, opens it in the Preview tab.
+The package panel sits on the left and folds into a thin rail (the arrow in its header) to give the editor the full width; the work area has two tabs, **Preview** and **Code**. Clicking a file opens it in the Code tab; the eye icon next to a page, or a course item, opens it in the Preview tab.
 
 - **Course structure**: reads `imsmanifest.xml` (SCORM 1.2 or 2004), lists the default organization's items and the launch page. Click an item to preview it.
 - **Files**: tree of every file in the package. Changed files get a yellow dot. Add, upload, rename, delete and revert files.
 - **Code**: CodeMirror editor for HTML, CSS, JavaScript, JSON and XML. Edits save as you type; the preview reloads when you switch back to it (turn off **Live** to stop that).
-- **Edit in the preview**: the Preview tab opens in **Edit** mode, so you can click any text in the page and type straight away. A toolbar gives bold, italic, underline, links, remove formatting, undo and redo, and double-clicking an image replaces it. Frames inside the page (Rise, Storyline and most LMS wrappers put the content in an inner iframe) are editable too, and each edited page is saved to its own file. With **Live** on, edits save as you type; with it off, press **Save** or Ctrl+S. **Undo all changes** puts the pages back. Switch to **Interact** to click through the course as a learner. Pages are saved as they look at that moment, so content a course's own scripts build at runtime is saved too; for script-built pages (Rise, Storyline) edit the source data in the Code tab instead.
+- **Edit in the preview**: the Preview tab opens in **Edit** mode, so you can click any text in the page and type straight away. A toolbar gives bold, italic, underline, links, remove formatting, undo and redo. Frames inside the page (Rise, Storyline and most LMS wrappers put the content in an inner iframe) are editable too. Switch to **Interact** to click through the course as a learner.
+- **Right-click menu**: on a link, edit its address, text and new-tab setting, open it, copy it or remove it; on selected text, add a link; on an embed (iframe, video, audio, object), edit its URL (and an iframe's title); on an image, replace it or edit its alt text; on any element, edit its HTML. Embeds from other sites get a yellow dashed outline in Edit mode, as they cannot be clicked into.
+- **Review before saving**: preview edits are drafts until you save them. **Review and save** (or Ctrl+S) shows a line-by-line diff of each edited page's source, with the changed words highlighted, then **Save changes**, **Keep editing** or **Discard changes**. Only the parts you changed are written; the rest of the file stays exactly as it was. If an edit cannot be matched to the source (usually text a course script built at runtime), the review warns that the page will be saved as the preview shows it. Anything that would reload the preview (another page, Interact, Reload, Export, opening the sample) asks you to save or discard first. The **changed files** badge next to the course title shows every change since the package was opened.
 - **LMS panel**: the preview answers SCORM 1.2 (`window.API`) and 2004 (`window.API_1484_11`) calls, showing status, score, location and a log of every call.
 - **Sync manifest**: rewrites the launch resource's `<file>` list so it names every file in the package.
 - **Export .zip**: downloads the edited package with `imsmanifest.xml` as the first entry.
 
 ## How the preview works
 
-Open packages are kept in memory (`ScormPackageStore`) and served from `/scorm-preview/{id}/{path}`. Because the course loads from real relative URLs on the same origin as the editor, it finds the stub API through `window.parent`, and Storyline/Rise packages that fetch their own data files work as they would on an LMS. Code edits are written back with `PUT` to the same URL, so large files do not hit the SignalR message limit. Packages are dropped when the editor page closes; nothing is written to disk.
+Open packages are kept in memory (`ScormPackageStore`) and served from `/scorm-preview/{id}/{path}`. Because the course loads from real relative URLs on the same origin as the editor, it finds the stub API through `window.parent`, and Storyline/Rise packages that fetch their own data files work as they would on an LMS. Code edits are written back with `PUT` to the same URL. Preview drafts go to the server for review over SignalR, so `Program.cs` raises the hub's message limit to 64 MB. Packages are dropped when the editor page closes; nothing is written to disk.
 
 ## Moving it into the Content Manager
 
