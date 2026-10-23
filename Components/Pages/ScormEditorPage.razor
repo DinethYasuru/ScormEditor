@@ -282,9 +282,21 @@
                     <div class="alert alert-info py-2 px-3 mb-0 rounded-0 small">@review.Note</div>
                 }
                 <div class="se-review-body">
+                    @if (review.Problems is { Count: > 0 } problems)
+                    {
+                        <div class="alert alert-warning py-2 px-3 small">
+                            <strong>@problems.Count @(problems.Count == 1 ? "edit" : "edits") can't be saved and will be left out:</strong>
+                            <ul class="mb-0 ps-3">
+                                @foreach (var pr in problems)
+                                {
+                                    <li><span class="fw-semibold">@pr.What</span> on @pr.Page. @pr.Why</li>
+                                }
+                            </ul>
+                        </div>
+                    }
                     @if (review.Files.Count == 0)
                     {
-                        <p class="text-muted p-3 mb-0">@(review.Drafts ? "The edits cancel out, so there is nothing to save." : "Nothing has changed yet.")</p>
+                        <p class="text-muted p-3 mb-0">@(review.Drafts ? (review.Problems is { Count: > 0 } ? "Nothing else to save." : "The edits cancel out, so there is nothing to save.") : "Nothing has changed yet.")</p>
                     }
                     @foreach (var f in review.Files)
                     {
@@ -550,9 +562,7 @@
     // One file in the review: the text that will be saved and its diff against what is saved now.
     private sealed record ReviewFile(string Path, string Label, string? NewText, TextDiff.Result? Diff, string? Warning);
 
-    private sealed record Review(bool Drafts, List<ReviewFile> Files, string? Note, Func<Task>? Then);
-
-    private sealed record Draft(string Path, string Baseline, string Edited);
+    private sealed record Review(bool Drafts, List<ReviewFile> Files, string? Note, Func<Task>? Then, IReadOnlyList<EditMapper.Problem>? Problems = null);
 
     // Runs an action that would reload the preview. With unsaved preview edits it opens the
     // review first, and runs the action once they are saved or discarded.
@@ -565,20 +575,14 @@
     private async Task ReviewDrafts(Func<Task>? then)
     {
         if (Package is null || module is null) return;
-        var drafts = await module.InvokeAsync<Draft[]>("getDrafts");
-        var files = new List<ReviewFile>();
-        foreach (var d in drafts)
-        {
-            if (!Package.Exists(d.Path)) continue;
-            var source = Package.ReadText(d.Path);
-            var outcome = DraftPatcher.Apply(source, d.Baseline, d.Edited);
-            if (outcome.Text == source) continue;
-            files.Add(new ReviewFile(d.Path, "edited in the preview", outcome.Text, TextDiff.Compare(source, outcome.Text),
-                outcome.Mapped ? null : "Some changes could not be matched to the page's source, so the page will be saved as the preview shows it. "
-                    + "Scripts in the page may have changed parts of it while it loaded; check those parts below before saving."));
-        }
+        var edits = await module.InvokeAsync<EditMapper.Edit[]>("getDrafts");
+        var result = EditMapper.Apply(Package, edits);
+        var files = result.Files
+            .Select(f => new ReviewFile(f.Path, "changed by your edits", f.NewText, TextDiff.Compare(f.OldDisplay, f.NewDisplay),
+                f.Notes.Count == 0 ? null : string.Join(" ", f.Notes)))
+            .ToList();
         review = new Review(true, files,
-            then is null ? null : "Save or discard these changes first. The preview reloads afterwards, which would lose them.", then);
+            then is null ? null : "Save or discard these changes first. The preview reloads afterwards, which would lose them.", then, result.Problems);
         StateHasChanged();
     }
 

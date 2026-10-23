@@ -17,7 +17,16 @@ public static class DraftPatcher
     // is written differently right around the change.
     private static readonly int[] ContextSizes = [80, 24, 240, 8];
 
-    public static Outcome Apply(string source, string baseline, string edited)
+    // For one element's HTML, short contexts can match the same words somewhere else in the page
+    // (its <title>, another element), so only contexts that reach into the element's markup are used.
+    private static readonly int[] ElementContextSizes = [80, 24];
+
+    public static Outcome Apply(string source, string baseline, string edited) => Apply(source, baseline, edited, ContextSizes);
+
+    /// <summary>Patches the change made to one element, given its HTML before and after.</summary>
+    public static Outcome ApplyElement(string source, string oldHtml, string newHtml) => Apply(source, oldHtml, newHtml, ElementContextSizes);
+
+    private static Outcome Apply(string source, string baseline, string edited, int[] contextSizes)
     {
         if (baseline == edited) return new Outcome(source, true);
 
@@ -57,7 +66,7 @@ public static class DraftPatcher
             var trail = oldBlock[^s..] + after;
 
             var replaced = false;
-            foreach (var size in ContextSizes)
+            foreach (var size in contextSizes)
             {
                 var left = lead.Length > size ? lead[^size..] : lead;
                 var right = trail.Length > size ? trail[..size] : trail;

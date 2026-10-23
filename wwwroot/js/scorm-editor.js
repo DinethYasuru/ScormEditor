@@ -188,10 +188,11 @@ function onFrameLoad() {
    every same-origin frame inside it, including frames a course creates later, because most
    authoring tools (Rise, Storyline, LMS wrappers) put the content in a nested iframe.
 
-   Edits are drafts. Just before a page is first changed, the editor takes a snapshot of it
-   (baseline). When the user reviews, each edited page is sent as baseline + current, the server
-   works out exactly what changed, applies only that to the source file and shows a diff. Nothing
-   is written until the user presses Save in the review.
+   Edits are drafts. Each edit is recorded against the smallest element that holds it, with a
+   copy of that element taken just before its first change. The review sends only those elements,
+   old and new, and the server finds each change in the package's files (the page's HTML, or the
+   data a script builds the page from) and shows a diff. Whatever a course's own scripts do to
+   the rest of the page never reaches a file. Nothing is written until the user saves the review.
 
    A right-click menu edits links, embeds (iframe, video, audio), images and raw element HTML.
    Embeds from other sites cannot receive clicks from the editor, so in Edit mode they are
@@ -201,7 +202,8 @@ function onFrameLoad() {
 let mode = "edit";
 let targets = [];                       // [{ win, doc, path, observer }]
 const hookedFrames = new WeakSet();
-const baselines = new Map();            // path -> page serialised just before its first edit
+const records = new Map();              // id -> { id, path, el, structural, oldHtml, oldText }
+let nextRecord = 1;
 let lastDoc = null;
 let imageInput = null;
 let menu = null;
@@ -223,7 +225,7 @@ export function setMode(next) {
 }
 
 export function hasDrafts() {
-    return baselines.size > 0;
+    return records.size > 0;
 }
 
 function enableIn(win) {
@@ -326,31 +328,102 @@ function onKeyDown(e) {
     }
 }
 
-// Snapshot a page the moment before its first change, so the review shows only the user's edits
-// and not what the course's own scripts did to the page while it loaded.
-function ensureBaseline(t) {
-    if (t && !baselines.has(t.path)) baselines.set(t.path, serialize(t.doc));
+const BLOCKS = "p,h1,h2,h3,h4,h5,h6,li,td,th,dt,dd,blockquote,figcaption,pre,caption,summary,label,button";
+const STRUCTURAL_INPUT = /^(insertParagraph|insertLineBreak|insertOrderedList|insertUnorderedList|insertHorizontalRule|insertFromPaste|insertFromDrop|formatBlock|formatIndent|formatOutdent)$/;
+
+const elementOf = (n) => (n?.nodeType === 1 ? n : n?.parentElement ?? null);
+
+// The element an edit at the current selection changes: the text's own element, or for edits
+// that split, join or add blocks, the element around them.
+function editTarget(t, inputType) {
+    const sel = t.doc.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    let el = elementOf(r.startContainer) === elementOf(r.endContainer) ? elementOf(r.startContainer) : elementOf(r.commonAncestorContainer);
+    if (!el) return null;
+    let structural = elementOf(r.startContainer)?.closest(BLOCKS) !== elementOf(r.endContainer)?.closest(BLOCKS) || STRUCTURAL_INPUT.test(inputType ?? "");
+    if (!structural && inputType?.startsWith("delete") && r.collapsed) {
+        // Deleting at the very start or end of a block joins it with its neighbour.
+        const block = el.closest(BLOCKS) || el;
+        const edge = t.doc.createRange();
+        edge.selectNodeContents(block);
+        if (inputType.includes("Backward")) edge.setEnd(r.startContainer, r.startOffset);
+        else edge.setStart(r.endContainer, r.endOffset);
+        structural = edge.toString().length === 0;
+    }
+    if (structural) el = (el.closest(BLOCKS) || el).parentElement || el;
+    return { el, structural };
+}
+
+// A copy of an element without anything the editor added to it.
+function clean(el) {
+    const c = el.cloneNode(true);
+    c.querySelectorAll("[data-se-injected]").forEach((n) => n.remove());
+    for (const n of [c, ...c.querySelectorAll("*")]) {
+        for (const a of Array.from(n.attributes)) {
+            if (a.name.startsWith("data-se-orig-")) {
+                n.setAttribute(a.name.slice(13), a.value);
+                n.removeAttribute(a.name);
+            } else if (a.name.startsWith("data-se-")) {
+                n.removeAttribute(a.name);
+            }
+        }
+    }
+    return c;
+}
+
+// Records an element just before it changes. An element inside one already recorded is covered by
+// that record; records inside a newly recorded element are folded into it, with their original
+// HTML put back so the new record starts from the page as it was.
+function track(t, target) {
+    if (!t || !target?.el) return;
+    const { el } = target;
+    if (el === t.doc.documentElement || el === t.doc.head) return;
+    const outer = el.closest("[data-se-rec]");
+    if (outer && records.has(+outer.getAttribute("data-se-rec"))) {
+        if (target.structural) records.get(+outer.getAttribute("data-se-rec")).structural = true;
+        return;
+    }
+    let structural = !!target.structural;
+    const copy = el.cloneNode(true);
+    for (const inner of copy.querySelectorAll("[data-se-rec]")) {
+        const rec = records.get(+inner.getAttribute("data-se-rec"));
+        if (!rec) continue;
+        const tpl = t.doc.createElement("template");
+        tpl.innerHTML = rec.oldHtml;
+        inner.replaceWith(tpl.content);
+        structural ||= rec.structural;
+    }
+    for (const inner of el.querySelectorAll("[data-se-rec]")) {
+        records.delete(+inner.getAttribute("data-se-rec"));
+        inner.removeAttribute("data-se-rec");
+    }
+    const c = clean(copy);
+    const id = nextRecord++;
+    records.set(id, { id, path: t.path, el, structural, oldHtml: c.outerHTML, oldText: c.textContent });
+    el.setAttribute("data-se-rec", id);
 }
 
 function onBeforeInput(e) {
-    ensureBaseline(targetFor(e.currentTarget));
+    const t = targetFor(e.currentTarget);
+    if (t) track(t, editTarget(t, e.inputType));
 }
 
 function onEditInput(e) {
     const t = targetFor(e.currentTarget);
     if (!t) return;
     lastDoc = t.doc;
-    ensureBaseline(t);
     reportDrafts();
 }
 
 // The editor page only hears when the set of edited pages changes, not on every keystroke.
 let reported = "";
 function reportDrafts() {
-    const key = [...baselines.keys()].sort().join("|");
+    const paths = [...new Set([...records.values()].map((r) => r.path))].sort();
+    const key = paths.join("|");
     if (key === reported) return;
     reported = key;
-    dotnet.invokeMethodAsync("OnDraftsChanged", [...baselines.keys()]);
+    dotnet.invokeMethodAsync("OnDraftsChanged", paths);
 }
 
 // Formatting toolbar commands act on the page that last had the cursor.
@@ -365,48 +438,53 @@ export function exec(command) {
         if (!sel || sel.isCollapsed) return;
         const url = window.prompt("Link address", "https://");
         if (!url) return;
-        ensureBaseline(t);
+        track(t, { ...editTarget(t), structural: true });
         doc.execCommand("createLink", false, url);
     } else {
-        ensureBaseline(t);
+        // Formatting wraps text in new elements, so it is a change of structure.
+        const target = editTarget(t, command === "undo" || command === "redo" ? null : "formatBlock");
+        track(t, target);
         doc.execCommand(command, false, null);
     }
     reportDrafts();
 }
 
-function serialize(doc) {
-    const root = doc.documentElement.cloneNode(true);
-    root.querySelectorAll("[data-se-injected]").forEach((n) => n.remove());
-    root.querySelectorAll("*").forEach((n) => {
-        for (const a of Array.from(n.attributes)) {
-            if (a.name.startsWith("data-se-orig-")) {
-                n.setAttribute(a.name.slice(13), a.value);
-                n.removeAttribute(a.name);
-            } else if (a.name.startsWith("data-se-")) {
-                n.removeAttribute(a.name);
-            }
-        }
-    });
-    const dt = doc.doctype;
-    const doctype = dt
-        ? `<!DOCTYPE ${dt.name}${dt.publicId ? ` PUBLIC "${dt.publicId}"` : ""}${dt.systemId ? ` "${dt.systemId}"` : ""}>\n`
-        : "";
-    return doctype + root.outerHTML + "\n";
-}
-
-// Edited pages for the review: [{ path, baseline, edited }].
+// Edited elements for the review: their HTML and text before the first edit and now, and the
+// attributes that changed when the element's structure is the same.
 export function getDrafts() {
     const out = [];
-    for (const [path, baseline] of baselines) {
-        const t = targets.find((x) => x.path === path);
-        if (t) out.push({ path, baseline, edited: serialize(t.doc) });
+    for (const r of records.values()) {
+        if (!r.el.isConnected) {
+            out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: null, oldText: r.oldText, newText: null, attrs: [], structural: r.structural, lost: true });
+            continue;
+        }
+        const c = clean(r.el);
+        if (c.outerHTML === r.oldHtml) continue;
+        const tpl = document.createElement("template");
+        tpl.innerHTML = r.oldHtml;
+        const before = [...tpl.content.querySelectorAll("*")];
+        const after = [c, ...c.querySelectorAll("*")];
+        let structural = r.structural || before.length !== after.length || before.some((b, i) => b.tagName !== after[i].tagName);
+        const attrs = [];
+        if (!structural) {
+            before.forEach((b, i) => {
+                const a = after[i];
+                for (const name of new Set([...b.getAttributeNames(), ...a.getAttributeNames()])) {
+                    const oldValue = b.getAttribute(name), newValue = a.getAttribute(name);
+                    if (oldValue !== newValue) attrs.push({ name, oldValue, newValue });
+                }
+            });
+            // Elements are the same, so whatever else changed is text.
+        }
+        out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: c.outerHTML, oldText: r.oldText, newText: c.textContent, attrs, structural, lost: false });
     }
     return out;
 }
 
 // Called after the server saved (or the user discarded) the drafts.
 export function clearDrafts(reload) {
-    baselines.clear();
+    for (const r of records.values()) r.el.removeAttribute("data-se-rec");
+    records.clear();
     reportDrafts();
     if (reload) {
         previewStale = false;
@@ -433,7 +511,7 @@ export function download(url) {
 }
 
 export function resetEdits() {
-    baselines.clear();
+    records.clear();
     reported = "";
 }
 
@@ -462,7 +540,7 @@ function onContextMenu(e) {
         items.push(["Edit link…", () => editLinkForm(t, link)]);
         items.push(["Open link in new tab", () => openUrl(link.getAttribute("href"), t)]);
         items.push(["Copy link address", () => copy(link.getAttribute("href"))]);
-        items.push(["Remove link", () => change(t, () => link.replaceWith(...link.childNodes))]);
+        items.push(["Remove link", () => change(t, { el: link.parentElement, structural: true }, () => link.replaceWith(...link.childNodes))]);
     } else if (hasSelection) {
         items.push(["Add link…", () => editLinkForm(t, null, sel.getRangeAt(0).cloneRange())]);
     }
@@ -478,21 +556,21 @@ function onContextMenu(e) {
         if (items.length) items.push(null);
         items.push(["Replace image…", () => pickImage(img)]);
         items.push(["Edit alt text…", () => form(`Alt text`, [{ name: "alt", label: "Describes the image for screen readers", value: img.getAttribute("alt") ?? "" }],
-            (v) => change(t, () => img.setAttribute("alt", v.alt)))]);
+            (v) => change(t, { el: img }, () => img.setAttribute("alt", v.alt)))]);
     }
     const target = embed || img || link || block;
     if (target) {
         if (items.length) items.push(null);
-        items.push([`Edit HTML of <${target.tagName.toLowerCase()}>…`, () => form("Edit HTML", [{ name: "html", label: "", value: target.outerHTML, multiline: true }],
-            (v) => change(t, () => { target.outerHTML = v.html; }))]);
+        items.push([`Edit HTML of <${target.tagName.toLowerCase()}>…`, () => form("Edit HTML", [{ name: "html", label: "", value: clean(target).outerHTML, multiline: true }],
+            (v) => change(t, { el: target.parentElement, structural: true }, () => { target.outerHTML = v.html; }))]);
     }
     if (!items.length) return;
     showMenu(items, doc, e.clientX, e.clientY);
 }
 
-// Applies one menu edit as a draft.
-function change(t, fn) {
-    ensureBaseline(t);
+// Applies one menu edit as a draft, recording the element it changes first.
+function change(t, target, fn) {
+    track(t, target);
     fn();
     shield(t.doc);
     reportDrafts();
@@ -504,7 +582,8 @@ function editLinkForm(t, link, range) {
         { name: "text", label: "Text", value: link ? link.textContent : range.toString() },
         { name: "newTab", label: "Open in a new tab", value: link?.getAttribute("target") === "_blank", checkbox: true },
     ];
-    form(link ? "Edit link" : "Add link", fields, (v) => change(t, () => {
+    const target = link ? { el: link } : { el: elementOf(range.commonAncestorContainer), structural: true };
+    form(link ? "Edit link" : "Add link", fields, (v) => change(t, target, () => {
         let a = link;
         if (!a) {
             a = t.doc.createElement("a");
@@ -525,7 +604,7 @@ function editEmbedForm(t, embed) {
     const holder = source || embed;
     const fields = [{ name: "src", label: "Address", value: holder.getAttribute(source ? "src" : attr) ?? "" }];
     if (tag === "iframe") fields.push({ name: "title", label: "Title (read by screen readers)", value: embed.getAttribute("title") ?? "" });
-    form(`Edit ${tag} URL`, fields, (v) => change(t, () => {
+    form(`Edit ${tag} URL`, fields, (v) => change(t, { el: embed }, () => {
         holder.setAttribute(source ? "src" : attr, v.src);
         if (tag === "iframe") { if (v.title) embed.setAttribute("title", v.title); else embed.removeAttribute("title"); }
         if (tag === "video" || tag === "audio") embed.load?.();
@@ -697,7 +776,7 @@ async function replaceImage(img, file) {
         target = (dir ? dir + "/" : "") + file.name;
         ref = relative(dirOf(t.path), target);
     }
-    if (ref !== origRef) ensureBaseline(t);
+    if (ref !== origRef) track(t, { el: img });
     await putFile(target, await file.arrayBuffer());
     img.setAttribute("data-se-orig-src", ref);
     img.removeAttribute("srcset");
