@@ -30,6 +30,35 @@ public sealed class ScormPackage
     /// <summary>Raised after any file is written, renamed or removed, with the affected path.</summary>
     public event Action<string>? Changed;
 
+    /// <summary>A line in the change log. Step is the undo step it belongs to, or 0 for a change
+    /// that can't be undone here (a Code tab edit, which the code editor's own undo covers).</summary>
+    public sealed record LogEntry(DateTimeOffset Time, string Page, string What, int Step);
+
+    private sealed record UndoStep(int Id, string Label, Dictionary<string, byte[]?> Before, Dictionary<string, byte[]?> After);
+
+    // Undo keeps the files' earlier bytes (the same arrays, not copies), so a few steps cost little;
+    // the oldest steps are dropped beyond these limits.
+    private const int MaxUndoSteps = 30;
+    private const long MaxUndoBytes = 200L * 1024 * 1024;
+    private const string ChangeLogName = "scorm-editor-changes.txt";
+
+    private readonly List<UndoStep> _undo = [];
+    private readonly List<LogEntry> _log = [];
+    private int _nextStep = 1;
+
+    /// <summary>When the package was last read or written, for closing courses left open and unused.</summary>
+    public DateTimeOffset LastUsed { get; private set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>The user's time zone offset, so change log times read as their local time.</summary>
+    public TimeSpan TimeOffset { get; set; }
+
+    /// <summary>Raised when the server closes the package because it was not used for a long time.</summary>
+    public event Action? Expired;
+
+    public void Touch() => LastUsed = DateTimeOffset.UtcNow;
+
+    internal void Expire() => Expired?.Invoke();
+
     public ScormPackage(string fileName, IEnumerable<KeyValuePair<string, byte[]>> files)
     {
         FileName = fileName;
@@ -60,11 +89,19 @@ public sealed class ScormPackage
 
     public byte[] ToZip()
     {
+        Touch();
         using var ms = new MemoryStream();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
         {
             lock (_gate)
             {
+                // What was edited, for whoever reviews the course. LMSs ignore files the manifest
+                // doesn't list, so it doesn't change how the course runs.
+                if (_log.Count > 0 && !_files.ContainsKey(ChangeLogName))
+                {
+                    using var log = new StreamWriter(zip.CreateEntry(ChangeLogName, CompressionLevel.Optimal).Open(), new UTF8Encoding(false));
+                    log.Write(ChangeLogTextUnlocked());
+                }
                 // The manifest goes first: some LMS importers only look at the first entries.
                 foreach (var path in _files.Keys.OrderBy(p => p == ManifestPath ? 0 : 1).ThenBy(p => p, StringComparer.Ordinal))
                 {
@@ -114,7 +151,7 @@ public sealed class ScormPackage
         }
     }
 
-    public byte[]? Read(string path) { lock (_gate) return _files.TryGetValue(path, out var b) ? b : null; }
+    public byte[]? Read(string path) { Touch(); lock (_gate) return _files.TryGetValue(path, out var b) ? b : null; }
 
     public string ReadText(string path) => DecodeText(Read(path) ?? []);
 
@@ -144,6 +181,7 @@ public sealed class ScormPackage
             _files[path] = data;
             UpdateDirtyUnlocked(path);
         }
+        Touch();
         if (path == ManifestPath) Reparse();
         Changed?.Invoke(path);
     }
@@ -194,6 +232,113 @@ public sealed class ScormPackage
         if (path == ManifestPath) Reparse();
         Changed?.Invoke(path);
     }
+
+    /* ---------- undo and change log ---------- */
+
+    /// <summary>
+    /// Runs a change as one undo step: the files in paths are remembered before and after write
+    /// runs, and the log lines are added under the step. Returns the step's id, or 0 when write
+    /// changed nothing (then there is nothing to undo or log).
+    /// </summary>
+    public int Step(string label, IEnumerable<string> paths, Action write, IEnumerable<(string Page, string What)> log)
+    {
+        var list = paths.Distinct().ToList();
+        var before = Snapshot(list);
+        write();
+        var after = Snapshot(list);
+        if (list.All(p => SameBytes(before[p], after[p]))) return 0;
+        lock (_gate)
+        {
+            var step = new UndoStep(_nextStep++, label, before, after);
+            _undo.Add(step);
+            var now = DateTimeOffset.UtcNow;
+            foreach (var (page, what) in log) _log.Add(new LogEntry(now, page, what, step.Id));
+            // Drop the oldest steps beyond the limits; their log lines stay, but can no longer be undone.
+            long bytes = _undo.Sum(u => u.Before.Values.Sum(b => (long)(b?.Length ?? 0)));
+            while (_undo.Count > 1 && (_undo.Count > MaxUndoSteps || bytes > MaxUndoBytes))
+            {
+                bytes -= _undo[0].Before.Values.Sum(b => (long)(b?.Length ?? 0));
+                _undo.RemoveAt(0);
+            }
+            return step.Id;
+        }
+    }
+
+    private Dictionary<string, byte[]?> Snapshot(IEnumerable<string> paths)
+    {
+        lock (_gate) return paths.ToDictionary(p => p, p => _files.TryGetValue(p, out var b) ? b : null, StringComparer.Ordinal);
+    }
+
+    /// <summary>Adds a log line that has no undo step. A repeat of the last line only updates its time,
+    /// so typing in the Code tab logs one line per file rather than one per save.</summary>
+    public void LogChange(string page, string what)
+    {
+        lock (_gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_log.Count > 0 && _log[^1] is { Step: 0 } last && last.Page == page && last.What == what)
+                _log[^1] = last with { Time = now };
+            else
+                _log.Add(new LogEntry(now, page, what, 0));
+        }
+    }
+
+    public IReadOnlyList<LogEntry> ChangeLog { get { lock (_gate) return [.. _log]; } }
+
+    /// <summary>What the next Undo puts back, or null when there is nothing to undo.</summary>
+    public string? UndoLabel { get { lock (_gate) return _undo.Count == 0 ? null : _undo[^1].Label; } }
+
+    /// <summary>
+    /// Puts back the files of the last step. Refused when a file was changed again since (in the
+    /// Code tab, say), because undoing would also throw that change away.
+    /// </summary>
+    public (string? Refused, IReadOnlyList<string> Paths) Undo()
+    {
+        UndoStep step;
+        lock (_gate)
+        {
+            if (_undo.Count == 0) return ("There is nothing to undo.", []);
+            step = _undo[^1];
+            var changed = step.After.Where(kv => !SameBytes(kv.Value, _files.TryGetValue(kv.Key, out var b) ? b : null)).Select(kv => kv.Key).ToList();
+            if (changed.Count > 0)
+                return ($"{string.Join(", ", changed)} {(changed.Count == 1 ? "was" : "were")} changed again after “{step.Label}”, so it can't be undone without losing that later change.", []);
+            _undo.RemoveAt(_undo.Count - 1);
+            foreach (var (path, data) in step.Before)
+            {
+                if (data is null) _files.Remove(path); else _files[path] = data;
+                UpdateDirtyUnlocked(path);
+            }
+            _sortedPaths = null;
+            _log.RemoveAll(l => l.Step == step.Id);
+        }
+        if (step.Before.Keys.Any(IsManifestName) || step.Before.ContainsKey(ManifestPath)) Reparse();
+        foreach (var path in step.Before.Keys) Changed?.Invoke(path);
+        return (null, [.. step.Before.Keys]);
+    }
+
+    /// <summary>Forgets the undo steps and the change log (after starting over).</summary>
+    public void ClearHistory()
+    {
+        lock (_gate) { _undo.Clear(); _log.Clear(); }
+    }
+
+    public string ChangeLogText() { lock (_gate) return ChangeLogTextUnlocked(); }
+
+    private string ChangeLogTextUnlocked()
+    {
+        var sb = new StringBuilder();
+        var offset = TimeOffset;
+        var zone = offset == TimeSpan.Zero ? "UTC" : $"UTC{(offset < TimeSpan.Zero ? "-" : "+")}{offset:hh\\:mm}";
+        sb.AppendLine($"Changes made to {FileName} with the SCORM Editor");
+        sb.AppendLine($"Times are {zone}.");
+        sb.AppendLine();
+        foreach (var e in _log)
+            sb.AppendLine($"{e.Time.ToOffset(offset):yyyy-MM-dd HH:mm}  {e.Page}: {e.What}");
+        return sb.ToString();
+    }
+
+    private static bool SameBytes(byte[]? a, byte[]? b) =>
+        a is null || b is null ? a == b : ReferenceEquals(a, b) || a.AsSpan().SequenceEqual(b);
 
     public string UniquePath(string path)
     {

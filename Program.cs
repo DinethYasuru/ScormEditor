@@ -4,6 +4,7 @@ using ScormEditor.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
+builder.Services.Configure<ScormEditorOptions>(builder.Configuration.GetSection("ScormEditor"));
 builder.Services.AddSingleton<ScormPackageStore>();
 
 builder.Services.AddRazorComponents()
