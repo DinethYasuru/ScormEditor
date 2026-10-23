@@ -385,3 +385,64 @@
     .se-rail { flex-direction: row; padding: 2px 4px; }
     .se-rail-label { writing-mode: horizontal-tb; transform: none; }
 }
+
+/* Drop a course .zip anywhere on the editor */
+.se-drop { display: none; }
+.scorm-editor.dropping .se-drop {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 1090;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5, 39, 103, .55);
+    border: 4px dashed #fff;
+    margin: 0;
+}
+.se-drop-hint {
+    color: #fff;
+    font-size: 1.4rem;
+    font-weight: 600;
+    pointer-events: none;
+}
+.se-drop-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: copy;
+}
+
+/* How-to strip */
+.se-tips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 18px;
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 8px 12px;
+    background: #eef4fb;
+    border: 1px solid #cfe0f3;
+    border-radius: 6px;
+    font-size: .85rem;
+}
+.se-tips li { display: flex; align-items: center; gap: 6px; }
+.se-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #1b6ec2;
+    color: #fff;
+    font-size: .72rem;
+    font-weight: 700;
+}
+
+/* Keep the edit bar on one line; the hint text gives way to the buttons. */
+.se-editbar { flex-wrap: nowrap; }
+.se-edit-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.se-editbar > .btn { flex-shrink: 0; }

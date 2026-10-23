@@ -37,8 +37,59 @@ export function init(dotnetRef, frameEl, editorEl, lmsEl) {
         queueSave(currentPath);
     });
     frame.addEventListener("load", onFrameLoad);
+    hookPageEvents();
     buildLmsPanel();
     installLmsApi();
+}
+
+/* ---------- page conveniences ---------- */
+
+let unsaved = false;
+
+// Small settings remembered in this browser (Advanced on or off, tips hidden).
+export function getPrefs() {
+    const prefs = {};
+    try {
+        for (const key of ["advanced", "tips"]) prefs[key] = localStorage.getItem("scorm-editor." + key);
+    } catch { }
+    return prefs;
+}
+
+export function setPref(key, value) {
+    try { localStorage.setItem("scorm-editor." + key, value); } catch { }
+}
+
+export function setUnsaved(on) {
+    unsaved = on;
+}
+
+function hookPageEvents() {
+    // Closing the tab loses the course, so the browser asks first while there is work to keep.
+    window.addEventListener("beforeunload", (e) => {
+        if (!unsaved && !hasDrafts()) return;
+        e.preventDefault();
+        e.returnValue = "";
+    });
+    // While a file is dragged over the page, show the drop target (a file input covering the page).
+    const root = () => document.querySelector(".scorm-editor");
+    let depth = 0;
+    window.addEventListener("dragenter", (e) => {
+        if (![...(e.dataTransfer?.types ?? [])].includes("Files")) return;
+        depth++;
+        root()?.classList.add("dropping");
+    });
+    window.addEventListener("dragleave", () => {
+        if (--depth <= 0) { depth = 0; root()?.classList.remove("dropping"); }
+    });
+    window.addEventListener("drop", () => {
+        depth = 0;
+        // Let the file input receive the drop before it is hidden again.
+        setTimeout(() => root()?.classList.remove("dropping"), 0);
+    });
+    window.addEventListener("dragover", (e) => {
+        // Outside the drop target, stop the browser from opening the file itself.
+        if (!e.target.closest?.(".se-drop")) e.preventDefault();
+    });
 }
 
 export function setPackage(id) {
@@ -213,6 +264,7 @@ const EDIT_STYLE = `
 a[href]{cursor:context-menu}
 img{cursor:pointer!important}
 img:hover{outline:3px solid #1b6ec2!important;outline-offset:2px}
+[data-se-rec]{background-color:rgba(255,214,0,.3)!important;box-shadow:0 0 0 2px rgba(255,193,7,.6)!important;border-radius:2px}
 [data-se-shield]{pointer-events:none!important;outline:2px dashed rgba(255,193,7,.9)!important;outline-offset:-2px}
 html{caret-color:#1b6ec2}`;
 

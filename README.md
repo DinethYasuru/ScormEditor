@@ -12,6 +12,8 @@ Then open http://localhost:5136/editor. The editor opens with a small sample cou
 
 ## What it does
 
+The editor opens in **simple mode**: the course's pages on the left and the course itself, ready to edit, on the right. A short how-to strip explains the four steps (type, right-click, Review and save, Download course) and can be hidden. Drop a course .zip anywhere on the page to open it. Edited text is highlighted in yellow until it is saved, **Start over** undoes every change, and the browser asks before closing the tab while there are changes not yet downloaded. Switch on **Advanced** for the file tree, Code tab, manifest tools, Live reload and the LMS panel described below; the choice is remembered in the browser.
+
 The package panel sits on the left and folds into a thin rail (the arrow in its header) to give the editor the full width; the work area has two tabs, **Preview** and **Code**. Clicking a file opens it in the Code tab; the eye icon next to a page, or a course item, opens it in the Preview tab.
 
 - **Course structure**: reads `imsmanifest.xml` (SCORM 1.2 or 2004), lists the default organization's items and the launch page. Click an item to preview it.
