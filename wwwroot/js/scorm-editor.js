@@ -606,10 +606,46 @@ export function resetEdits() {
 
 const ACTIONS = "a[href], button, [role=button], [role=link], input[type=button], input[type=submit], input[type=reset], summary, label[for]";
 
+let following = false;
+
 function blockActions(e) {
-    if (e.type === "submit" || e.target.closest?.(ACTIONS) || e.target.closest?.("[onclick]")) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
+    if (following) return;
+    const action = e.target.closest?.(ACTIONS) || e.target.closest?.("[onclick]");
+    if (e.type !== "submit" && !action) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    // Ctrl+click (Cmd+click on a Mac) uses the button or link as a learner would.
+    if (e.type === "click" && (e.ctrlKey || e.metaKey) && action) follow(action);
+}
+
+// Clicks a button or link for real, so the course moves to the page it leads to. Leaving for
+// another file would drop unsaved edits, so the review opens first instead.
+function follow(action) {
+    const doc = action.ownerDocument;
+    const href = action.closest("a[href]")?.getAttribute("href");
+    if (href && hasDrafts()) {
+        try {
+            const to = new URL(href, doc.defaultView.location.href), here = doc.defaultView.location;
+            if (to.pathname !== here.pathname || to.origin !== here.origin) {
+                dotnet.invokeMethodAsync("OnReviewRequested");
+                return;
+            }
+        } catch { }
+    }
+    following = true;
+    let handled;
+    try {
+        handled = !action.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: doc.defaultView }));
+    } finally {
+        following = false;
+    }
+    // Editable pages don't follow links themselves, so when the course's own script didn't take
+    // the click, go to the link's address.
+    const link = action.closest("a[href]");
+    if (!handled && link) {
+        const url = new URL(link.getAttribute("href"), doc.defaultView.location.href).href;
+        if (link.target === "_blank") window.open(url, "_blank", "noopener");
+        else doc.defaultView.location.href = url;
     }
 }
 
@@ -733,6 +769,7 @@ function onContextMenu(e) {
     const action = el.closest?.(ACTIONS);
     if (action) {
         if (items.length) items.push(null);
+        items.push([action.closest("a[href]") ? "Go to this link (Ctrl+click)" : "Click this button (Ctrl+click)", () => follow(action)]);
         items.push(["Edit label…", () => editLabelForm(t, action)]);
         items.push(["Hide this for learners…", () => hideForm(t, action)]);
     } else if (block && !embed) {
