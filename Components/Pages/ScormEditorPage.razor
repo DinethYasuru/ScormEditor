@@ -782,7 +782,7 @@
         tab = Tab.Preview;
         collapsed.Clear();
         await module!.InvokeVoidAsync("setPackage", package.Id);
-        await module.InvokeVoidAsync("setSession", "open", package.Id.ToString());
+        await module!.InvokeVoidAsync("setSession", "open", package.Id.ToString());
         UpdateUnsavedFlag();
 
         var launch = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
@@ -807,7 +807,7 @@
         draftPaths = [];
         UpdateUnsavedFlag();
         await module!.InvokeVoidAsync("setUnsaved", false);
-        await module.InvokeVoidAsync("setSession", "open", null);
+        await module!.InvokeVoidAsync("setSession", "open", null);
         Show($"This course was closed after {Store.Options.IdleHours:0.#} hours without use, to free memory on the server. Open it again to keep editing.", "warning");
     });
 
@@ -1317,7 +1317,7 @@
             {
                 previewPath = place.Path;
                 Package.LastPreviewPath = place.Path;
-                await module.InvokeVoidAsync("loadPreviewAt", place.Path, place.Anchor);
+                await module!.InvokeVoidAsync("loadPreviewAt", place.Path, place.Anchor);
             }
         }
         catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); }

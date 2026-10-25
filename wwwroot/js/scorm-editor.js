@@ -1096,9 +1096,20 @@ function unmarkTerms(root) {
     root.normalize();
 }
 
+// While Japanese or Chinese input (IME) is composing a word, the page is left alone: changing the
+// text around the cursor would cancel what is being typed.
+let composing = false;
+const composeHooked = new WeakSet();
+function hookComposition(doc) {
+    if (composeHooked.has(doc)) return;
+    composeHooked.add(doc);
+    doc.addEventListener("compositionstart", () => { composing = true; }, true);
+    doc.addEventListener("compositionend", () => { composing = false; if (terms) scheduleTermScan(); }, true);
+}
+
 function scheduleTermScan() {
     clearTimeout(termTimer);
-    termTimer = setTimeout(() => scanTerms(true), 700);
+    termTimer = setTimeout(() => (composing ? scheduleTermScan() : scanTerms(true)), 700);
 }
 
 let termRe = null, termOrder = [], termSeq = 0;
@@ -1130,8 +1141,12 @@ function scanTermsNow(later) {
             const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+");
             termOrder = words.map((_, i) => i).sort((x, y) => words[y].length - words[x].length);
             const letter = "[\\p{L}\\p{M}\\p{N}_]";
-            const alt = termOrder.map((i) => `(${esc(words[i])})`).join("|");
-            termRe = new RegExp(terms.whole ? `(?<!${letter})(?:${alt})(?!${letter})` : `(?:${alt})`, "gu" + (terms.cs ? "" : "i"));
+            // Japanese, Chinese and Thai have no spaces between words: no boundary at such an edge.
+            const unspaced = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f\u0e00-\u0e7f]/;
+            const bound = (w, p) => !terms.whole ? p
+                : (unspaced.test(w[0]) ? "" : `(?<!${letter})`) + p + (unspaced.test(w[w.length - 1]) ? "" : `(?!${letter})`);
+            const alt = termOrder.map((i) => bound(words[i], `(${esc(words[i])})`)).join("|");
+            termRe = new RegExp(alt, "gu" + (terms.cs ? "" : "i"));
         }
     }
     termHits = [];
@@ -1146,6 +1161,7 @@ function scanTermsNow(later) {
     collectTermHits(docs);
     // Watch for content the course draws later; the marks just added are not changes to scan for.
     for (const doc of docs) {
+        hookComposition(doc);
         const o = new MutationObserver(scheduleTermScan);
         o.observe(doc.body, { childList: true, subtree: true, characterData: true });
         termObservers.push(o);

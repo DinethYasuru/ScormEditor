@@ -36,6 +36,9 @@ public static class ScormPreviewEndpoints
             using var ms = new MemoryStream();
             await request.Body.CopyToAsync(ms);
             var data = ms.ToArray();
+            // Text from the Code tab arrives as UTF-8; store it in the file's own encoding.
+            if (ScormPackage.IsText(target) && request.Headers["X-Scorm-Editor-Step"].Count == 0)
+                data = package.EncodeText(target, System.Text.Encoding.UTF8.GetString(data));
             // An image swapped from the preview is one undo step; Code tab saves arrive every few
             // keystrokes, so they are only logged (the code editor has its own undo).
             if (request.Headers["X-Scorm-Editor-Step"].FirstOrDefault() is { Length: > 0 } step)
