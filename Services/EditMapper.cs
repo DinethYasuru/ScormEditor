@@ -186,6 +186,36 @@ public static class EditMapper
         return (new Result(ws.Changes(), []), hits);
     }
 
+    public sealed record TermHit(int Term, string Path, string Before, string Text, string After);
+
+    /// <summary>
+    /// Finds every term of a word list in text learners see, the same places find and replace
+    /// looks, and changes nothing. Longer terms win where terms overlap, so "Learning Journey" is
+    /// not also counted as "Learning". Hits carry the index of the term in the list.
+    /// </summary>
+    public static IReadOnlyList<TermHit> ScanTerms(ScormPackage package, IReadOnlyList<string> terms, bool matchCase, bool wholeWord, int max = 5000)
+    {
+        var order = Enumerable.Range(0, terms.Count).Where(i => terms[i].Trim().Length > 0).OrderByDescending(i => terms[i].Length).ToList();
+        if (order.Count == 0) return [];
+        var alternatives = string.Join("|", order.Select(i => $"(?<t{i}>{Flexible(terms[i], 0, terms[i].Length, [])})"));
+        var pattern = (wholeWord ? @"(?<![\p{L}\p{N}_])" : "") + "(?:" + alternatives + ")" + (wholeWord ? @"(?![\p{L}\p{N}_])" : "");
+        var re = new Regex(pattern, matchCase ? RegexOptions.ExplicitCapture : RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase, RegexTimeout);
+        var ws = new Workspace(package);
+        var hits = new List<TermHit>();
+        foreach (var (where, m) in ws.FindAll(re, ""))
+        {
+            if (ReaderText(where, m.Index) is not var (lo, hi)) continue;
+            var term = order.First(i => m.Groups["t" + i].Success);
+            var text = where.Text;
+            hits.Add(new TermHit(term, where.File.Path,
+                Readable(text, Math.Max(lo, m.Index - 50), m.Index, true),
+                Readable(text, m.Index, m.Index + m.Length, false),
+                Readable(text, m.Index + m.Length, Math.Min(hi, m.Index + m.Length + 50), false)));
+            if (hits.Count >= max) break;
+        }
+        return hits;
+    }
+
     // Text a learner reads: in a page, outside tags, scripts and styles; in script data, inside a
     // string that is not an object key, and outside any markup the string holds. Returns the
     // bounds of the text around it (the string, for script data), or null.

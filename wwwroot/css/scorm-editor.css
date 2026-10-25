@@ -12,7 +12,7 @@
     --se-sunk: #eef1f5;
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 3.5rem - 1.6rem);
+    height: calc(100vh - 1.75rem - 1rem);
     min-height: 560px;
 }
 
@@ -477,3 +477,40 @@
 }
 .se-start-icon { font-size: 2.4rem; color: #1b6ec2; display: block; margin-bottom: 12px; }
 .se-grid[hidden] { display: none; }
+
+/* Word check: a third column beside the preview, so highlights stay in view while stepping through them */
+.se-grid.terms-open { grid-template-columns: 240px minmax(0, 1fr) 300px; }
+.se-grid.side-closed.terms-open { grid-template-columns: 34px minmax(0, 1fr) 300px; }
+.se-terms { font-size: 0.82rem; }
+.se-terms .se-pane-header { gap: 2px; }
+.se-terms .se-pane-header .btn-close { font-size: 0.6rem; }
+.se-terms-edit { padding: 8px 10px; border-bottom: 1px solid var(--se-border); background: #fafbfc; }
+.se-terms-edit textarea { font: 12px/1.45 SFMono-Regular, Consolas, "Liberation Mono", monospace; tab-size: 18; white-space: pre; }
+.se-terms-summary { padding: 8px 10px; border-bottom: 1px solid var(--se-border); display: flex; flex-direction: column; gap: 3px; }
+.se-terms-note { color: #0e6b62; background: #e9f7f4; border-radius: 4px; padding: 4px 6px; margin: 3px 0; }
+.se-terms-warn { color: #7a4b00; background: #fff6dc; border: 1px solid #f0d78a; border-radius: 4px; padding: 3px 6px; }
+.se-terms-list { padding: 0; }
+.se-term { border-bottom: 1px solid #f0f2f6; padding: 5px 10px; }
+.se-term.missing { background: #fff4f4; }
+.se-term-row { display: flex; align-items: center; gap: 8px; }
+.se-term-swatch { flex: none; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, .15); }
+.se-term-words { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.se-term-word { color: var(--se-ink); }
+.se-term.missing .se-term-word { color: #b4232f; }
+.se-term-use { color: #0e6b62; font-size: 0.76rem; }
+.se-term-count { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 0.8rem; flex: none; }
+.se-term-page { display: flex; align-items: center; gap: 4px; margin: 3px 0 0 20px; color: var(--se-muted); font-size: 0.76rem; }
+.se-term-page span { flex: 1; }
+.se-term-page .btn { padding: 0 8px; line-height: 1.4; border-color: var(--se-border); }
+.se-term-places { list-style: none; margin: 4px 0 2px 20px; padding: 0; font-size: 0.76rem; color: #3b4652; }
+.se-term-places li { padding: 3px 0; border-top: 1px dashed #e3e7ee; overflow-wrap: anywhere; }
+.se-term-places mark { background: #ffe14d; padding: 0 1px; }
+.se-term-file { font-size: 0.72rem; color: var(--se-muted); margin-right: 4px; vertical-align: baseline; }
+.se-term-tip { position: fixed; z-index: 1080; pointer-events: none; max-width: 320px; background: #1b2230; color: #fff; font: 12px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 7px 9px; border-radius: 7px; box-shadow: 0 6px 20px rgba(0, 0, 0, .3); }
+.se-term-old { font-size: 11px; color: #aab4c5; text-decoration: line-through; }
+.se-term-new { font-weight: 600; font-size: 13px; color: #ffe14d; }
+@media (max-width: 1100px) {
+    .se-grid.terms-open, .se-grid.side-closed.terms-open { grid-template-columns: minmax(0, 1fr); }
+    .se-grid.terms-open .se-side, .se-grid.terms-open .se-rail { display: none; }
+    .se-terms { max-height: 45vh; }
+}
