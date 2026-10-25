@@ -1012,6 +1012,38 @@ export function setTerms(config) {
     scanTerms();
 }
 
+// Shows a word where the course has it: in the frame already showing that page (moving it to the
+// Rise lesson given by hash), or returns false so the editor loads the page. Once the page draws
+// the word, the first match is scrolled into view.
+let termSeek = null;
+export function termsShow(path, hash, index) {
+    termSeek = { index, until: Date.now() + 10000 };
+    const doc = termDocs().docs.find((d) => pathOfWindow(d.defaultView) === path);
+    if (!doc) return false;
+    if (hash && doc.defaultView.location.hash !== hash) doc.defaultView.location.hash = hash;
+    scheduleTermScan();
+    return true;
+}
+
+export function loadPreviewAt(path, hash) {
+    teardownEditing();
+    previewStale = false;
+    frame.src = `${base}/${encodePath(path)}${hash || ""}`;
+}
+
+function seekTerm() {
+    if (!termSeek) return;
+    if (Date.now() > termSeek.until) { termSeek = null; return; }
+    const list = termHits[termSeek.index];
+    if (!list?.length) return;
+    const index = termSeek.index;
+    termSeek = null;
+    const first = Math.max(0, list.findIndex((h) => h.visible));
+    list.cur = first > 0 ? first - 1 : null;
+    const at = termsGo(index, 1);
+    if (at) dotnet.invokeMethodAsync("OnTermShown", index, at);
+}
+
 export function termsGo(index, dir) {
     const list = termHits[index];
     if (!list?.length) return null;
@@ -1119,6 +1151,7 @@ function scanTermsNow(later) {
         termObservers.push(o);
     }
     reportTerms(docs.length, blocked);
+    seekTerm();
 }
 
 function selectionNodes(doc) {

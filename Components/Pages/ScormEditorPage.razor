@@ -408,10 +408,11 @@
                         <div class="se-term @(inCourse + onPage == 0 ? "missing" : null)">
                             <div class="se-term-row">
                                 <span class="se-term-swatch" style="background:@(inCourse + onPage > 0 ? TermState.Colours[i % TermState.Colours.Length] : "transparent")"></span>
-                                <span class="se-term-words">
+                                <button type="button" class="se-term-words" disabled="@(inCourse + onPage == 0)"
+                                        title="@(inCourse + onPage > 0 ? "Show where it appears" : null)" @onclick="() => ShowTerm(index)">
                                     <span class="se-term-word">@term.Old</span>
                                     @if (term.New.Length > 0) { <span class="se-term-use">→ @term.New</span> }
-                                </span>
+                                </button>
                                 @if (inCourse > 0)
                                 {
                                     <button type="button" class="btn btn-sm btn-link p-0 se-term-count" title="Show where in the course" @onclick="() => terms.Open = terms.Open == index ? null : index">
@@ -439,13 +440,16 @@
                                         <li>
                                             @if (ScormPackage.IsHtml(hit.Path))
                                             {
-                                                <button type="button" class="btn btn-link p-0 se-term-file" title="Show this page in the preview" @onclick="() => PreviewPage(hit.Path)">@hit.Path.Split('/')[^1]</button>
+                                                <button type="button" class="se-term-place" title="Show it in the preview" @onclick="() => ShowTerm(index, hit)">
+                                                    <span class="se-term-file">@hit.Path.Split('/')[^1]</span>
+                                                    @(hit.Before.Length > 0 ? "…" + hit.Before : "")<mark>@hit.Text</mark>@(hit.After.Length > 0 ? hit.After + "…" : "")
+                                                </button>
                                             }
                                             else
                                             {
                                                 <span class="se-term-file">@hit.Path.Split('/')[^1]</span>
+                                                @(hit.Before.Length > 0 ? "…" + hit.Before : "")<mark>@hit.Text</mark>@(hit.After.Length > 0 ? hit.After + "…" : "")
                                             }
-                                            @(hit.Before.Length > 0 ? "…" + hit.Before : "")<mark>@hit.Text</mark>@(hit.After.Length > 0 ? hit.After + "…" : "")
                                         </li>
                                     }
                                     @if (inCourse > 50) { <li class="text-muted">and @(inCourse - 50) more</li> }
@@ -1281,10 +1285,51 @@
         try { at = await module!.InvokeAsync<TermPosition?>("termsGo", index, dir); }
         catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); return; }
         if (at is null) return;
-        terms.Position[index] = $"{at.At} of {at.Of} on this page{(at.Hidden ? " (hidden: on another tab or slide)" : "")}";
+        terms.Position[index] = Describe(at);
     }
 
-    private sealed record TermPosition(int At, int Of, bool Hidden);
+    public sealed record TermPosition(int At, int Of, bool Hidden);
+
+    private static string Describe(TermPosition at) =>
+        $"{at.At} of {at.Of} on this page{(at.Hidden ? " (hidden: on another tab or slide)" : "")}";
+
+    // Clicking a word: its next match when the page shows it; otherwise the page (and Rise lesson)
+    // with its first place in the course, scrolled to the word once it is drawn.
+    private Task ShowTerm(int index, EditMapper.TermHit? place = null) => AfterDrafts(async () =>
+    {
+        if (terms is null || Package is null) return;
+        if (tab != Tab.Preview) ShowTab(Tab.Preview);
+        var onPage = index < terms.PageCounts.Length ? terms.PageCounts[index] : 0;
+        if (place is null && onPage > 0)
+        {
+            await TermGo(index, 1);
+            return;
+        }
+        place ??= terms.Hits.Where(h => h.Term == index && ScormPackage.IsHtml(h.Path)).OrderBy(h => h.Anchor is null).FirstOrDefault();
+        if (place is null)
+        {
+            Show($"“{terms.Terms[index].Old}” is only in a data file that the preview can't open on its own. Its places are listed under the count.", "info");
+            return;
+        }
+        try
+        {
+            if (!await module!.InvokeAsync<bool>("termsShow", place.Path, place.Anchor, index))
+            {
+                previewPath = place.Path;
+                Package.LastPreviewPath = place.Path;
+                await module.InvokeVoidAsync("loadPreviewAt", place.Path, place.Anchor);
+            }
+        }
+        catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); }
+    });
+
+    [JSInvokable]
+    public Task OnTermShown(int index, TermPosition at) => InvokeAsync(() =>
+    {
+        if (terms is null) return;
+        terms.Position[index] = Describe(at);
+        StateHasChanged();
+    });
 
     private void ToggleTermEditor()
     {
