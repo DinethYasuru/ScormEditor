@@ -25,7 +25,8 @@ public static class EditMapper
     /// <summary>One edited element. Breaks are offsets in its old text where markup sits. Hide is a
     /// CSS selector to hide for learners; Unhide removes every element hidden that way.</summary>
     public sealed record Edit(string Path, string OldHtml, string? NewHtml, string OldText, string? NewText,
-        AttrChange[]? Attrs, bool Structural, bool Lost, int[]? Breaks, string? Hide = null, bool Unhide = false);
+        AttrChange[]? Attrs, bool Structural, bool Lost, int[]? Breaks, string? Hide = null, bool Unhide = false,
+        string? OldPart = null, string? NewPart = null);
 
     /// <summary>A file the edits change. The display texts show encoded course data decoded and indented.</summary>
     public sealed record FileChange(string Path, string NewText, string OldDisplay, string NewDisplay, IReadOnlyList<string> Notes);
@@ -72,6 +73,17 @@ public static class EditMapper
             {
                 page.Text = outcome.Text;
                 continue;
+            }
+            // 1b. Formatting in a page a script builds: the changed HTML in the course's data.
+            if (e.Structural && e.OldPart is { } oldPart && e.NewPart is { } newPart)
+            {
+                var (why, places) = ReplaceMarkup(ws, e.Path, oldPart, newPart, all);
+                if (why is null) continue;
+                if (places > 0)
+                {
+                    problems.Add(new Problem(e.Path, $"Formatting of {Describe(e.OldText)}", why, index, places));
+                    continue;
+                }
             }
             if (e.Structural)
             {
@@ -449,6 +461,49 @@ public static class EditMapper
             : ("This text was not found in the package's files. A script may build it from data the editor can't read; edit it in the Code tab.", 0);
     }
 
+    // Markup inside a string of course data (Rise keeps each paragraph's HTML as a JSON string),
+    // replaced with the new markup escaped the way the string writes it.
+    private static (string? Why, int Places) ReplaceMarkup(Workspace ws, string page, string oldPart, string newPart, bool all)
+    {
+        if (Regex.Replace(oldPart, "<[^>]*>", "").Trim().Length < 8) return ("The changed part is too small to find safely.", 0);
+        var re = new Regex("(" + Flexible(oldPart, 0, oldPart.Length, []) + ")", RegexOptions.None, RegexTimeout);
+        var matches = ws.FindAll(re, page)
+            .Where(x => x.Where.IsScript(x.Match.Index) && StringAround(x.Where.Text, x.Match.Index, nested: false) is { } r && r.Hi >= x.Match.Index + x.Match.Length)
+            .ToList();
+        if (matches.Count == 0) return ("not found", 0);
+        if (matches.Count > 1 && !all && !Mirrored(matches))
+            return ($"This part of the page appears in {matches.Count} places in the course's data, so it is not clear which one to change.", matches.Count);
+        ws.ReplaceRaw(matches, (c, m) => EscapeLike(newPart, c.Text, m));
+        if (matches.Count > 1) NoteMany(matches, "The formatted text “" + Shorten(Regex.Replace(oldPart, "<[^>]*>", "")) + "”");
+        return (null, 0);
+    }
+
+    // New markup written into a string the way the old markup was: its quote escaped, and < > /
+    // escaped too when the string escapes them.
+    private static string EscapeLike(string value, string text, Match m)
+    {
+        var lo = StringAround(text, m.Index, nested: false)?.Lo ?? m.Index;
+        var quote = lo > 0 ? text[lo - 1] : '"';
+        var old = m.Value;
+        var sb = new StringBuilder();
+        foreach (var ch in value)
+        {
+            sb.Append(ch switch
+            {
+                '\\' => @"\\",
+                '\n' => @"\n",
+                '\r' => @"\r",
+                '\t' => @"\t",
+                '<' when old.Contains(@"\u003c", StringComparison.OrdinalIgnoreCase) => @"\u003c",
+                '>' when old.Contains(@"\u003e", StringComparison.OrdinalIgnoreCase) => @"\u003e",
+                '/' when old.Contains(@"\/") => @"\/",
+                _ when ch == quote => "\\" + ch,
+                _ => ch.ToString(),
+            });
+        }
+        return sb.ToString();
+    }
+
     private static (string? Why, int Places) ReplaceValue(Workspace ws, string page, string oldValue, string newValue, bool all)
     {
         if (oldValue.Trim().Length < 4) return ("The old value is too short to find safely. Edit it in the Code tab.", 0);
@@ -583,6 +638,18 @@ public static class EditMapper
                     var g = m.Groups[1];
                     text = text[..g.Index] + Encode(value(m), c, text, g.Index, isText) + text[(g.Index + g.Length)..];
                 }
+                c.Text = text;
+            }
+        }
+
+        public void ReplaceRaw(List<(Container Where, Match Match)> matches, Func<Container, Match, string> value)
+        {
+            foreach (var group in matches.GroupBy(m => m.Where))
+            {
+                var c = group.Key;
+                var text = c.Text;
+                foreach (var (_, m) in group.OrderByDescending(x => x.Match.Index))
+                    text = text[..m.Index] + value(c, m) + text[(m.Index + m.Length)..];
                 c.Text = text;
             }
         }
