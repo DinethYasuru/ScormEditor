@@ -512,8 +512,9 @@ function reportDrafts() {
     dotnet.invokeMethodAsync("OnDraftsChanged", paths);
 }
 
-// Formatting toolbar commands act on the page that last had the cursor.
-export function exec(command) {
+// Formatting toolbar commands act on the page that last had the cursor. Formatting is written as
+// inline styles (styleWithCSS), the way authoring tools write it, rather than <font> tags.
+export function exec(command, value) {
     const doc = lastDoc && targetFor(lastDoc) ? lastDoc : targets[0]?.doc;
     if (!doc) return;
     // Clicking the toolbar moves focus to the editor page; commands need it back in the course page.
@@ -526,13 +527,137 @@ export function exec(command) {
         if (!url) return;
         track(t, { ...editTarget(t), structural: true });
         doc.execCommand("createLink", false, url);
-    } else {
-        // Formatting wraps text in new elements, so it is a change of structure.
-        const target = editTarget(t, command === "undo" || command === "redo" ? null : "formatBlock");
-        track(t, target);
+    } else if (command === "undo" || command === "redo") {
+        track(t, editTarget(t, null));
         doc.execCommand(command, false, null);
+    } else {
+        // Formatting wraps text in new elements or restyles blocks, so it is a change of structure.
+        track(t, editTarget(t, "formatBlock"));
+        if (command === "fontBigger" || command === "fontSmaller") {
+            resizeText(doc, command === "fontBigger" ? 1.15 : 1 / 1.15);
+        } else if (command === "formatBlock" && renameBlocks(doc, value)) {
+            // done
+        } else if ((command === "insertOrderedList" || command === "insertUnorderedList") && !inList(doc)
+            && makeList(doc, command === "insertOrderedList" ? "ol" : "ul")) {
+            // done
+        } else if ((command === "indent" || command === "outdent") && !inList(doc)) {
+            // The browser's own indent wraps blocks in new <blockquote>s and can move them out of
+            // the course's layout; outside lists a left margin does the same job in place.
+            indentBlocks(doc, command === "indent" ? 1 : -1);
+        } else {
+            doc.execCommand("styleWithCSS", false, true);
+            doc.execCommand(command, false, command === "formatBlock" ? `<${value}>` : value ?? null);
+        }
     }
     reportDrafts();
+}
+
+function inList(doc) {
+    const sel = doc.getSelection();
+    return !!(sel?.rangeCount && elementOf(sel.getRangeAt(0).startContainer)?.closest("li"));
+}
+
+function selectedBlocks(doc) {
+    const sel = doc.getSelection();
+    if (!sel?.rangeCount) return [];
+    const r = sel.getRangeAt(0);
+    const kinds = "p,h1,h2,h3,h4,h5,h6,blockquote,pre,ul,ol,div";
+    const first = elementOf(r.startContainer)?.closest(kinds);
+    if (r.collapsed || first === elementOf(r.endContainer)?.closest(kinds)) return first ? [first] : [];
+    const root = elementOf(r.commonAncestorContainer);
+    return [...root.querySelectorAll(kinds)].filter((b) => r.intersectsNode(b) && !b.querySelector(kinds));
+}
+
+// Bullets or numbering on paragraphs: each paragraph becomes an item of one new list (the
+// browser's own command puts a list inside a styled paragraph, which isn't valid HTML).
+function makeList(doc, tag) {
+    const blocks = selectedBlocks(doc).filter((b) => /^(P|H[1-6]|DIV)$/.test(b.tagName) && b !== doc.body
+        && !b.querySelector("p,div,ul,ol,table,section"));
+    if (!blocks.length) return false;
+    const list = doc.createElement(tag);
+    blocks[0].before(list);
+    for (const b of blocks) {
+        const li = doc.createElement("li");
+        if (b.getAttribute("style")) li.setAttribute("style", b.getAttribute("style"));
+        li.append(...b.childNodes);
+        list.append(li);
+        b.remove();
+    }
+    const r = doc.createRange();
+    r.selectNodeContents(list.lastElementChild);
+    r.collapse(false);
+    doc.getSelection().removeAllRanges();
+    doc.getSelection().addRange(r);
+    return true;
+}
+
+// Indent steps of 40px (as browsers indent lists), on the paragraphs in the selection.
+function indentBlocks(doc, step) {
+    for (const b of selectedBlocks(doc)) {
+        if (b === doc.body) continue;
+        const now = parseFloat(b.style.marginLeft) || 0;
+        const next = Math.max(0, now + step * 40);
+        b.style.marginLeft = next ? `${next}px` : "";
+        if (!b.getAttribute("style")) b.removeAttribute("style");
+    }
+}
+
+// Paragraph style: the paragraphs in the selection become the chosen element (keeping their
+// attributes and content). Returns false when the cursor isn't in such a paragraph.
+function renameBlocks(doc, tag) {
+    const sel = doc.getSelection();
+    if (!sel?.rangeCount || !tag) return false;
+    const r = sel.getRangeAt(0);
+    const kinds = "p,h1,h2,h3,h4,h5,h6,blockquote,pre";
+    const root = elementOf(r.commonAncestorContainer);
+    const blocks = r.collapsed || elementOf(r.startContainer)?.closest(kinds) === elementOf(r.endContainer)?.closest(kinds)
+        ? [elementOf(r.startContainer)?.closest(kinds)]
+        : [...root.querySelectorAll(kinds)].filter((b) => r.intersectsNode(b) && !b.querySelector(kinds));
+    if (!blocks.length || blocks.some((b) => !b)) return false;
+    for (const b of blocks) {
+        if (b.tagName.toLowerCase() === tag) continue;
+        const n = doc.createElement(tag);
+        for (const a of b.attributes) n.setAttribute(a.name, a.value);
+        n.append(...b.childNodes);
+        b.replaceWith(n);
+    }
+    return true;
+}
+
+// Makes the selected text a step larger or smaller. With nothing selected, or a selection across
+// paragraphs, the whole paragraphs change size.
+function resizeText(doc, factor) {
+    const sel = doc.getSelection();
+    if (!sel?.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    const win = doc.defaultView;
+    const px = (el) => parseFloat(win.getComputedStyle(el).fontSize) || 16;
+    const step = (size) => Math.max(8, Math.round(size * factor)) + "px";
+    const blockOf = (n) => elementOf(n)?.closest(BLOCKS) ?? null;
+    const startBlock = blockOf(r.startContainer);
+    if (r.collapsed || startBlock !== blockOf(r.endContainer)) {
+        const root = elementOf(r.commonAncestorContainer);
+        const blocks = r.collapsed
+            ? [startBlock || elementOf(r.startContainer)]
+            : [...root.querySelectorAll(BLOCKS), root].filter((b) => b.matches(BLOCKS) && r.intersectsNode(b) && !b.querySelector(BLOCKS));
+        for (const b of blocks.filter(Boolean)) b.style.fontSize = step(px(b));
+        return;
+    }
+    // Pressing again resizes the text just resized, instead of wrapping it once more.
+    const inner = elementOf(r.commonAncestorContainer);
+    if (inner?.tagName === "SPAN" && inner.style.fontSize && inner.textContent === r.toString()) {
+        inner.style.fontSize = step(px(inner));
+        return;
+    }
+    const span = doc.createElement("span");
+    span.style.fontSize = step(px(elementOf(r.startContainer)));
+    span.append(r.extractContents());
+    span.querySelectorAll("[style]").forEach((n) => { n.style.fontSize = ""; if (!n.getAttribute("style")) n.removeAttribute("style"); });
+    r.insertNode(span);
+    const again = doc.createRange();
+    again.selectNodeContents(span);
+    sel.removeAllRanges();
+    sel.addRange(again);
 }
 
 // Offsets in an element's text where markup sits (bold, links, spans), so the server can match
@@ -579,9 +704,42 @@ export function getDrafts() {
             });
             // Elements are the same, so whatever else changed is text.
         }
-        out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: c.outerHTML, oldText: r.oldText, newText: c.textContent, attrs, structural, lost: false, breaks: textBreaks(tpl.content) });
+        const part = structural ? changedPart(tpl.content.firstElementChild, c) : null;
+        out.push({ path: r.path, oldHtml: r.oldHtml, newHtml: c.outerHTML, oldText: r.oldText, newText: c.textContent, attrs, structural, lost: false, breaks: textBreaks(tpl.content),
+            oldPart: part?.oldPart ?? null, newPart: part?.newPart ?? null });
     }
     return out;
+}
+
+// The smallest run of child elements that a change of structure (formatting, lists, alignment)
+// replaced, old and new, as HTML. Courses that build pages from data (Rise) store a paragraph's
+// HTML as a string; the server finds this old HTML there and puts the new HTML in its place.
+function changedPart(oldEl, newEl) {
+    if (!oldEl || !newEl) return null;
+    const html = (n) => {
+        if (n.nodeType === 1) return n.outerHTML;
+        if (n.nodeType !== 3) return "";
+        const d = document.createElement("div");
+        d.append(n.data);
+        return d.innerHTML;
+    };
+    const startTag = (el) => el.outerHTML.slice(0, el.outerHTML.indexOf(">") + 1);
+    // The element itself was renamed or restyled (a heading, an alignment, an indent).
+    if (startTag(oldEl) !== startTag(newEl)) return { oldPart: oldEl.outerHTML, newPart: newEl.outerHTML };
+    {
+        const a = [...oldEl.childNodes], b = [...newEl.childNodes];
+        let p = 0, s = 0;
+        while (p < a.length && p < b.length && html(a[p]) === html(b[p])) p++;
+        while (s < a.length - p && s < b.length - p && html(a[a.length - 1 - s]) === html(b[b.length - 1 - s])) s++;
+        const oldMid = a.slice(p, a.length - s), newMid = b.slice(p, b.length - s);
+        // One element changed only inside: look inside it for a smaller change.
+        if (oldMid.length === 1 && newMid.length === 1 && oldMid[0].nodeType === 1 && newMid[0].nodeType === 1
+            && startTag(oldMid[0]) === startTag(newMid[0]) && oldMid[0].textContent.trim().length > 0) {
+            const inner = changedPart(oldMid[0], newMid[0]);
+            if (inner && inner.oldPart.replace(/<[^>]*>/g, "").trim().length >= 8) return inner;
+        }
+        return { oldPart: oldMid.map(html).join(""), newPart: newMid.map(html).join("") };
+    }
 }
 
 // Called after the server saved (or the user discarded) the drafts.

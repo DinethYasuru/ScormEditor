@@ -286,10 +286,51 @@
             @if (previewMode == PreviewMode.Edit)
             {
                 <div class="se-editbar">
-                    <div class="btn-group btn-group-sm" role="group" aria-label="Formatting">
+                    @* Formatting acts on the selected text (or, with nothing selected, the paragraph the cursor is in).
+                       Every change is a draft like typing: it is saved only through Review and save. *@
+                    <select class="form-select form-select-sm se-fmt-block" title="Paragraph style" aria-label="Paragraph style"
+                            @onchange='e => Exec("formatBlock", e.Value?.ToString())' value="">
+                        <option value="" disabled>Style</option>
+                        <option value="p">Normal text</option>
+                        <option value="h1">Heading 1</option>
+                        <option value="h2">Heading 2</option>
+                        <option value="h3">Heading 3</option>
+                        <option value="h4">Heading 4</option>
+                        <option value="blockquote">Quote</option>
+                    </select>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Text">
                         <button type="button" class="btn btn-light" title="Bold (Ctrl+B)" @onclick='() => Exec("bold")' @onmousedown:preventDefault><b>B</b></button>
                         <button type="button" class="btn btn-light" title="Italic (Ctrl+I)" @onclick='() => Exec("italic")' @onmousedown:preventDefault><i>I</i></button>
                         <button type="button" class="btn btn-light" title="Underline (Ctrl+U)" @onclick='() => Exec("underline")' @onmousedown:preventDefault><u>U</u></button>
+                        <button type="button" class="btn btn-light" title="Strikethrough" @onclick='() => Exec("strikeThrough")' @onmousedown:preventDefault><s>S</s></button>
+                        <button type="button" class="btn btn-light" title="Superscript" @onclick='() => Exec("superscript")' @onmousedown:preventDefault>x<sup>2</sup></button>
+                        <button type="button" class="btn btn-light" title="Subscript" @onclick='() => Exec("subscript")' @onmousedown:preventDefault>x<sub>2</sub></button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Size and colour">
+                        <button type="button" class="btn btn-light" title="Smaller text" @onclick='() => Exec("fontSmaller")' @onmousedown:preventDefault><span class="se-fmt-a small">A</span>−</button>
+                        <button type="button" class="btn btn-light" title="Larger text" @onclick='() => Exec("fontBigger")' @onmousedown:preventDefault><span class="se-fmt-a">A</span>+</button>
+                        <label class="btn btn-light se-fmt-colour" title="Text colour" @onmousedown:preventDefault>
+                            <span class="se-fmt-a" style="border-bottom-color:@textColour">A</span>
+                            <input type="color" value="@textColour" aria-label="Text colour" @onchange='e => SetColour("foreColor", e.Value?.ToString())' />
+                        </label>
+                        <label class="btn btn-light se-fmt-colour" title="Highlight colour" @onmousedown:preventDefault>
+                            <span class="oi oi-brush" style="border-bottom:3px solid @markColour"></span>
+                            <input type="color" value="@markColour" aria-label="Highlight colour" @onchange='e => SetColour("hiliteColor", e.Value?.ToString())' />
+                        </label>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Alignment">
+                        <button type="button" class="btn btn-light" title="Align left" @onclick='() => Exec("justifyLeft")' @onmousedown:preventDefault><span class="oi oi-align-left"></span></button>
+                        <button type="button" class="btn btn-light" title="Centre" @onclick='() => Exec("justifyCenter")' @onmousedown:preventDefault><span class="oi oi-align-center"></span></button>
+                        <button type="button" class="btn btn-light" title="Align right" @onclick='() => Exec("justifyRight")' @onmousedown:preventDefault><span class="oi oi-align-right"></span></button>
+                        <button type="button" class="btn btn-light" title="Justify" @onclick='() => Exec("justifyFull")' @onmousedown:preventDefault><span class="oi oi-justify-center"></span></button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Lists and indent">
+                        <button type="button" class="btn btn-light" title="Bulleted list" @onclick='() => Exec("insertUnorderedList")' @onmousedown:preventDefault><span class="oi oi-list"></span></button>
+                        <button type="button" class="btn btn-light se-fmt-num" title="Numbered list" @onclick='() => Exec("insertOrderedList")' @onmousedown:preventDefault>1.</button>
+                        <button type="button" class="btn btn-light" title="Decrease indent" @onclick='() => Exec("outdent")' @onmousedown:preventDefault>⇤</button>
+                        <button type="button" class="btn btn-light" title="Increase indent" @onclick='() => Exec("indent")' @onmousedown:preventDefault>⇥</button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Link and clear">
                         <button type="button" class="btn btn-light" title="Make a link" @onclick='() => Exec("createLink")' @onmousedown:preventDefault><span class="oi oi-link-intact"></span></button>
                         <button type="button" class="btn btn-light" title="Remove formatting" @onclick='() => Exec("removeFormat")' @onmousedown:preventDefault><span class="oi oi-ban"></span></button>
                     </div>
@@ -928,7 +969,20 @@
         await module!.InvokeVoidAsync("setMode", mode == PreviewMode.Edit ? "edit" : "interact");
     });
 
-    private async Task Exec(string command) => await module!.InvokeVoidAsync("exec", command);
+    private string textColour = "#c00000", markColour = "#ffe14d";
+
+    private async Task Exec(string command, string? value = null)
+    {
+        if (string.IsNullOrEmpty(value) && command == "formatBlock") return;
+        await module!.InvokeVoidAsync("exec", command, value);
+    }
+
+    private async Task SetColour(string command, string? colour)
+    {
+        if (colour is null) return;
+        if (command == "foreColor") textColour = colour; else markColour = colour;
+        await Exec(command, colour);
+    }
 
     private void ToggleAdvanced(ChangeEventArgs e)
     {
