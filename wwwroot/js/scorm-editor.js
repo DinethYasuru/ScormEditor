@@ -52,6 +52,8 @@ export function getPrefs() {
     try {
         for (const key of ["advanced", "tips", "terms"]) prefs[key] = localStorage.getItem("scorm-editor." + key);
     } catch { }
+    // The course this tab had open: kept per tab, so a refresh carries on with it.
+    try { prefs.open = sessionStorage.getItem("scorm-editor.open"); } catch { }
     // Minutes ahead of UTC, so the change log shows the user's own time.
     prefs.tz = String(-new Date().getTimezoneOffset());
     return prefs;
@@ -59,6 +61,13 @@ export function getPrefs() {
 
 export function setPref(key, value) {
     try { localStorage.setItem("scorm-editor." + key, value); } catch { }
+}
+
+export function setSession(key, value) {
+    try {
+        if (value == null) sessionStorage.removeItem("scorm-editor." + key);
+        else sessionStorage.setItem("scorm-editor." + key, value);
+    } catch { }
 }
 
 export function setUnsaved(on) {
@@ -1066,6 +1075,15 @@ let termRe = null, termOrder = [], termSeq = 0;
 // marks that still match and only marks new text, and leaves the text being typed in alone so the
 // cursor stays where it is.
 function scanTerms(later) {
+    try {
+        scanTermsNow(later);
+    } catch (e) {
+        // A page the scan can't handle must not stop the editor; the counts are left as they were.
+        console.error("Word check:", e);
+    }
+}
+
+function scanTermsNow(later) {
     clearTimeout(termTimer);
     termObservers.forEach((o) => o.disconnect());
     termObservers = [];

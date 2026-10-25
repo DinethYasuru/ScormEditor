@@ -1,3 +1,4 @@
+@inject ScormEditor.Services.AssetVersion Assets
 <!DOCTYPE html>
 <html lang="en">
 
@@ -8,8 +9,8 @@
     <link rel="stylesheet" href="lib/bootstrap/bootstrap.min.css" />
     <link rel="stylesheet" href="lib/open-iconic/css/open-iconic-bootstrap.min.css" />
     <link rel="stylesheet" href="lib/codemirror/codemirror.css" />
-    <link rel="stylesheet" href="css/site.css" />
-    <link rel="stylesheet" href="css/scorm-editor.css" />
+    <link rel="stylesheet" href="@Assets.Url("css/site.css")" />
+    <link rel="stylesheet" href="@Assets.Url("css/scorm-editor.css")" />
     <link rel="stylesheet" href="ScormEditor.styles.css" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <HeadOutlet @rendermode="InteractiveServer" />

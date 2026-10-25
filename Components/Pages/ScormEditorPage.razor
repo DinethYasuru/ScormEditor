@@ -2,6 +2,7 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 @inject ScormPackageStore Store
+@inject AssetVersion Assets
 
 <PageTitle>SCORM Editor</PageTitle>
 
@@ -731,7 +732,7 @@
             await module.InvokeVoidAsync("refresh");
         }
         if (!firstRender) return;
-        module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/scorm-editor.js");
+        module = await JS.InvokeAsync<IJSObjectReference>("import", "./" + Assets.Url("js/scorm-editor.js"));
         selfRef = DotNetObjectReference.Create(this);
         await module.InvokeVoidAsync("init", selfRef, frame, editorHost, lmsHost);
         var prefs = await module.InvokeAsync<Dictionary<string, string?>>("getPrefs");
@@ -739,23 +740,32 @@
         timeOffset = TimeSpan.FromMinutes(int.TryParse(prefs.GetValueOrDefault("tz"), out var tz) ? tz : 0);
         showTips = prefs.GetValueOrDefault("tips") != "0";
         LoadTermPrefs(prefs.GetValueOrDefault("terms"));
+        // The course this tab had open before a refresh or a visit to another page of the app.
+        if (Guid.TryParse(prefs.GetValueOrDefault("open"), out var openId) && Store.Get(openId) is { } kept)
+        {
+            if (await OpenPackage(kept, reopened: true))
+                Show($"Carried on with {kept.FileName}. Saved changes are kept; edits that weren't saved in the preview were lost.", "info");
+        }
         StateHasChanged();
     }
 
-    private async Task<bool> OpenPackage(ScormPackage package)
+    private async Task<bool> OpenPackage(ScormPackage package, bool reopened = false)
     {
         if (Package is not null)
         {
             Package.Changed -= OnPackageChanged;
             Package.Expired -= OnPackageExpired;
-            Store.Remove(Package.Id);
+            Store.Release(Package);
+            if (Package.Viewers == 0) Store.Remove(Package.Id);
         }
-        if (!Store.TryAdd(package))
+        if (!reopened && !Store.TryAdd(package))
         {
             Package = null;
+            await module!.InvokeVoidAsync("setSession", "open", null);
             Show($"The server already has {Store.Options.MaxOpenCourses} courses open, the most it allows. Try again in a few minutes, or ask someone to close a course they've finished with.", "danger");
             return false;
         }
+        Store.Attach(package);
         Package = package;
         package.TimeOffset = timeOffset;
         package.Changed += OnPackageChanged;
@@ -768,10 +778,13 @@
         tab = Tab.Preview;
         collapsed.Clear();
         await module!.InvokeVoidAsync("setPackage", package.Id);
+        await module.InvokeVoidAsync("setSession", "open", package.Id.ToString());
         UpdateUnsavedFlag();
 
-        var start = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
-        await OpenFile(start ?? (package.ManifestPath.Length > 0 ? package.ManifestPath : package.Paths.FirstOrDefault()));
+        var launch = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
+        var code = reopened && package.LastCodePath is { } c && package.Exists(c) ? c : launch;
+        var start = reopened && package.LastPreviewPath is { } v && package.Exists(v) ? v : launch;
+        await OpenFile(code ?? (package.ManifestPath.Length > 0 ? package.ManifestPath : package.Paths.FirstOrDefault()));
         await SetPreview(start);
         if (termsOpen) ScanCourseTerms();
         return true;
@@ -790,6 +803,7 @@
         draftPaths = [];
         UpdateUnsavedFlag();
         await module!.InvokeVoidAsync("setUnsaved", false);
+        await module.InvokeVoidAsync("setSession", "open", null);
         Show($"This course was closed after {Store.Options.IdleHours:0.#} hours without use, to free memory on the server. Open it again to keep editing.", "warning");
     });
 
@@ -853,6 +867,7 @@
     {
         if (Package is null || path is null || !Package.Exists(path)) return;
         currentPath = path;
+        Package.LastCodePath = path;
         renamePath = path;
         confirmDelete = false;
         if (ScormPackage.IsText(path))
@@ -887,6 +902,7 @@
     private async Task SetPreview(string? path)
     {
         previewPath = path;
+        if (Package is not null) Package.LastPreviewPath = path;
         await module!.InvokeVoidAsync("loadPreview", path);
     }
 
@@ -961,7 +977,7 @@
     });
 
     [JSInvokable]
-    public Task OnPreviewNavigated(string path) => InvokeAsync(() => { previewPath = path; StateHasChanged(); });
+    public Task OnPreviewNavigated(string path) => InvokeAsync(() => { previewPath = path; if (Package is not null) Package.LastPreviewPath = path; StateHasChanged(); });
 
     [JSInvokable]
     public Task OnDraftsChanged(string[] paths) => InvokeAsync(() => { Package?.Touch(); draftPaths = paths; StateHasChanged(); });
@@ -1201,7 +1217,7 @@
         else
         {
             terms.Position.Clear();
-            await module!.InvokeVoidAsync("setTerms", (object?)null);
+            await TryJs("setTerms", (object?)null);
         }
     }
 
@@ -1209,7 +1225,16 @@
     private void ScanCourseTerms()
     {
         if (terms is null || Package is null) return;
-        terms.Hits = EditMapper.ScanTerms(Package, terms.Terms.Select(t => t.Old).ToList(), terms.MatchCase, terms.WholeWord, TermState.MaxHits);
+        try
+        {
+            terms.Hits = EditMapper.ScanTerms(Package, terms.Terms.Select(t => t.Old).ToList(), terms.MatchCase, terms.WholeWord, TermState.MaxHits);
+        }
+        catch (Exception ex) when (ex is System.Text.RegularExpressions.RegexMatchTimeoutException or ArgumentException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            // A failed scan must never close the editor: show what happened and keep going.
+            terms.Hits = [];
+            Show($"The word check couldn't read the whole course ({ex.GetType().Name}: {ex.Message}). Counts on the page still work.", "warning");
+        }
         var counts = new int[terms.Terms.Count];
         foreach (var hit in terms.Hits) counts[hit.Term]++;
         terms.Counts = counts;
@@ -1220,13 +1245,21 @@
     {
         if (terms is null || module is null) return;
         terms.Position.Clear();
-        await module.InvokeVoidAsync("setTerms", new
+        await TryJs("setTerms", new
         {
             words = terms.Terms.Select(t => new[] { t.Old, t.New }).ToArray(),
             cs = terms.MatchCase,
             whole = terms.WholeWord,
             chips = terms.Chips,
         });
+    }
+
+    // Word check calls into the preview: a script error in an unusual course page is reported, not
+    // allowed to close the editor.
+    private async Task TryJs(string name, params object?[] args)
+    {
+        try { await module!.InvokeVoidAsync(name, args); }
+        catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); }
     }
 
     [JSInvokable]
@@ -1244,7 +1277,9 @@
     private async Task TermGo(int index, int dir)
     {
         if (terms is null) return;
-        var at = await module!.InvokeAsync<TermPosition?>("termsGo", index, dir);
+        TermPosition? at;
+        try { at = await module!.InvokeAsync<TermPosition?>("termsGo", index, dir); }
+        catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); return; }
         if (at is null) return;
         terms.Position[index] = $"{at.At} of {at.Of} on this page{(at.Hidden ? " (hidden: on another tab or slide)" : "")}";
     }
@@ -1302,7 +1337,7 @@
             foreach (var hit in places)
                 sb.AppendLine($"{terms.Terms[hit.Term].Old}\t{hit.Path}\t…{hit.Before}[{hit.Text}]{hit.After}…");
         }
-        await module!.InvokeVoidAsync("copyText", sb.ToString());
+        await TryJs("copyText", sb.ToString());
         Show("Copied the word check report. Paste it into an email or a spreadsheet.", "success");
     }
 
@@ -1579,7 +1614,8 @@
         {
             Package.Changed -= OnPackageChanged;
             Package.Expired -= OnPackageExpired;
-            Store.Remove(Package.Id);
+            // Kept for a while so a refresh, or coming back from another page, carries on with it.
+            Store.Release(Package);
         }
         if (module is not null)
         {

@@ -38,7 +38,8 @@ Courses are held in the server's memory while they're open. `appsettings.json` s
 
 - `MaxUploadMB` (500): the largest course .zip that can be opened.
 - `MaxOpenCourses` (20): the most courses open at once across all users; opening one more asks the user to try again later.
-- `IdleHours` (8): a course nobody has used for this long is closed and its memory freed; its tab says so. Closing the tab frees it straight away.
+- `IdleHours` (8): a course nobody has used for this long is closed and its memory freed; its tab says so.
+- `ReopenMinutes` (30): after the editor page closes (a refresh, going to Home), the course is kept this long so the same tab carries on with it, saved changes and undo included. Edits not yet saved in the preview are lost on a refresh.
 
 ## How the preview works
 
