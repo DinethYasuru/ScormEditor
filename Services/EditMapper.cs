@@ -166,7 +166,7 @@ public static class EditMapper
     {
         var ws = new Workspace(package);
         if (find.Trim().Length == 0) return (new Result([], []), []);
-        var pattern = (wholeWord ? @"(?<![\p{L}\p{N}_])" : "") + "(" + Flexible(find, 0, find.Length, []) + ")" + (wholeWord ? @"(?![\p{L}\p{N}_])" : "");
+        var pattern = Bounded("(" + Flexible(find, 0, find.Length, []) + ")", find.Trim(), wholeWord);
         var re = new Regex(pattern, matchCase ? RegexOptions.None : RegexOptions.IgnoreCase, RegexTimeout);
         var hits = new List<Hit>();
         var chosen = new List<(Container, Match)>();
@@ -198,8 +198,7 @@ public static class EditMapper
     {
         var order = Enumerable.Range(0, terms.Count).Where(i => terms[i].Trim().Length > 0).OrderByDescending(i => terms[i].Length).ToList();
         if (order.Count == 0) return [];
-        var alternatives = string.Join("|", order.Select(i => $"(?<t{i}>{Flexible(terms[i], 0, terms[i].Length, [])})"));
-        var pattern = (wholeWord ? @"(?<![\p{L}\p{N}_])" : "") + "(?:" + alternatives + ")" + (wholeWord ? @"(?![\p{L}\p{N}_])" : "");
+        var pattern = string.Join("|", order.Select(i => Bounded($"(?<t{i}>{Flexible(terms[i], 0, terms[i].Length, [])})", terms[i].Trim(), wholeWord)));
         var re = new Regex(pattern, matchCase ? RegexOptions.ExplicitCapture : RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase, RegexTimeout);
         var ws = new Workspace(package);
         var hits = new List<TermHit>();
@@ -503,12 +502,28 @@ public static class EditMapper
                 '"' => @"(?:&quot;|&#34;|\\u0022|\\""|"")",
                 '\'' => @"(?:&#39;|&#x27;|&apos;|\\u0027|\\'|')",
                 '/' => @"(?:\\/|/)",
-                _ when c > 127 => $@"(?:{Regex.Escape(c.ToString())}|\\u{HexPattern((int)c)}|&#{(int)c};|&#[xX]0*{HexPattern((int)c)};)",
+                _ when c > 127 => $@"(?:{Regex.Escape(c.ToString())}|\\u{HexPattern((int)c)}|&#{(int)c};|&#[xX]0*{HexPattern((int)c)};{(EntityNames.TryGetValue(c, out var name) ? $"|&{name};" : "")})",
                 _ => Regex.Escape(c.ToString()),
             });
         }
         return sb.ToString();
     }
+
+    // Named HTML entities for accented letters and typographic marks, as French, German and other
+    // European courses often write them (&eacute;, &uuml;, &szlig;, &rsquo;).
+    private static readonly Dictionary<char, string> EntityNames = new()
+    {
+        [(char)0x00A0] = "nbsp", [(char)0x00A1] = "iexcl", [(char)0x00A2] = "cent", [(char)0x00A3] = "pound", [(char)0x00A4] = "curren", [(char)0x00A5] = "yen", [(char)0x00A6] = "brvbar", [(char)0x00A7] = "sect", [(char)0x00A8] = "uml", [(char)0x00A9] = "copy", [(char)0x00AA] = "ordf", [(char)0x00AB] = "laquo", [(char)0x00AC] = "not", [(char)0x00AD] = "shy", [(char)0x00AE] = "reg", [(char)0x00AF] = "macr", [(char)0x00B0] = "deg", [(char)0x00B1] = "plusmn", [(char)0x00B2] = "sup2", [(char)0x00B3] = "sup3", [(char)0x00B4] = "acute", [(char)0x00B5] = "micro", [(char)0x00B6] = "para", [(char)0x00B7] = "middot", [(char)0x00B8] = "cedil", [(char)0x00B9] = "sup1", [(char)0x00BA] = "ordm", [(char)0x00BB] = "raquo", [(char)0x00BC] = "frac14", [(char)0x00BD] = "frac12", [(char)0x00BE] = "frac34", [(char)0x00BF] = "iquest", [(char)0x00C0] = "Agrave", [(char)0x00C1] = "Aacute", [(char)0x00C2] = "Acirc", [(char)0x00C3] = "Atilde", [(char)0x00C4] = "Auml", [(char)0x00C5] = "Aring", [(char)0x00C6] = "AElig", [(char)0x00C7] = "Ccedil", [(char)0x00C8] = "Egrave", [(char)0x00C9] = "Eacute", [(char)0x00CA] = "Ecirc", [(char)0x00CB] = "Euml", [(char)0x00CC] = "Igrave", [(char)0x00CD] = "Iacute", [(char)0x00CE] = "Icirc", [(char)0x00CF] = "Iuml", [(char)0x00D0] = "ETH", [(char)0x00D1] = "Ntilde", [(char)0x00D2] = "Ograve", [(char)0x00D3] = "Oacute", [(char)0x00D4] = "Ocirc", [(char)0x00D5] = "Otilde", [(char)0x00D6] = "Ouml", [(char)0x00D7] = "times", [(char)0x00D8] = "Oslash", [(char)0x00D9] = "Ugrave", [(char)0x00DA] = "Uacute", [(char)0x00DB] = "Ucirc", [(char)0x00DC] = "Uuml", [(char)0x00DD] = "Yacute", [(char)0x00DE] = "THORN", [(char)0x00DF] = "szlig", [(char)0x00E0] = "agrave", [(char)0x00E1] = "aacute", [(char)0x00E2] = "acirc", [(char)0x00E3] = "atilde", [(char)0x00E4] = "auml", [(char)0x00E5] = "aring", [(char)0x00E6] = "aelig", [(char)0x00E7] = "ccedil", [(char)0x00E8] = "egrave", [(char)0x00E9] = "eacute", [(char)0x00EA] = "ecirc", [(char)0x00EB] = "euml", [(char)0x00EC] = "igrave", [(char)0x00ED] = "iacute", [(char)0x00EE] = "icirc", [(char)0x00EF] = "iuml", [(char)0x00F0] = "eth", [(char)0x00F1] = "ntilde", [(char)0x00F2] = "ograve", [(char)0x00F3] = "oacute", [(char)0x00F4] = "ocirc", [(char)0x00F5] = "otilde", [(char)0x00F6] = "ouml", [(char)0x00F7] = "divide", [(char)0x00F8] = "oslash", [(char)0x00F9] = "ugrave", [(char)0x00FA] = "uacute", [(char)0x00FB] = "ucirc", [(char)0x00FC] = "uuml", [(char)0x00FD] = "yacute", [(char)0x00FE] = "thorn", [(char)0x00FF] = "yuml", [(char)0x0152] = "OElig", [(char)0x0153] = "oelig", [(char)0x0160] = "Scaron", [(char)0x0161] = "scaron", [(char)0x0178] = "Yuml", [(char)0x2013] = "ndash", [(char)0x2014] = "mdash", [(char)0x2018] = "lsquo", [(char)0x2019] = "rsquo", [(char)0x201C] = "ldquo", [(char)0x201D] = "rdquo", [(char)0x201E] = "bdquo", [(char)0x2022] = "bull", [(char)0x2026] = "hellip", [(char)0x20AC] = "euro", [(char)0x2122] = "trade",
+    };
+
+    // Whole words: no letter or digit right before or after. Japanese, Chinese and Thai are written
+    // without spaces between words, so at an edge in those scripts any neighbour is allowed.
+    private static string Bounded(string pattern, string term, bool wholeWord) =>
+        !wholeWord || term.Length == 0 ? pattern
+        : (Spaced(term[0]) ? @"(?<![\p{L}\p{N}_])" : "") + pattern + (Spaced(term[^1]) ? @"(?![\p{L}\p{N}_])" : "");
+
+    private static bool Spaced(char c) =>
+        c is not ((>= '\u3040' and <= '\u30FF') or (>= '\u3400' and <= '\u9FFF') or (>= '\uF900' and <= '\uFAFF') or (>= '\uFF66' and <= '\uFF9F') or (>= '\u0E00' and <= '\u0E7F'));
 
     private static string HexPattern(int code) =>
         string.Concat(code.ToString("x4").Select(h => char.IsLetter(h) ? $"[{h}{char.ToUpperInvariant(h)}]" : h.ToString()));

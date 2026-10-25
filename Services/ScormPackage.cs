@@ -177,7 +177,7 @@ public sealed class ScormPackage
         get { lock (_gate) return _dirty.Order(StringComparer.Ordinal).ToList(); }
     }
 
-    private static string DecodeText(byte[] b) => Encoding.UTF8.GetString(b.AsSpan(HasBom(b) ? 3 : 0));
+    private static string DecodeText(byte[] b) => TextEncoding.Decode(b);
 
     public void Write(string path, byte[] data)
     {
@@ -194,13 +194,10 @@ public sealed class ScormPackage
         Changed?.Invoke(path);
     }
 
-    public void WriteText(string path, string text)
-    {
-        // Keep a UTF-8 byte order mark if the original file had one.
-        var hadBom = HasBom(Read(path) ?? []);
-        var bytes = Encoding.UTF8.GetBytes(text);
-        Write(path, hadBom ? [0xEF, 0xBB, 0xBF, .. bytes] : bytes);
-    }
+    /// <summary>Writes text in the file's own encoding (and byte order mark), UTF-8 for a new file.</summary>
+    public void WriteText(string path, string text) => Write(path, EncodeText(path, text));
+
+    public byte[] EncodeText(string path, string text) => TextEncoding.EncodeLike(Read(path), text);
 
     public void Delete(string path)
     {
@@ -413,5 +410,4 @@ public sealed class ScormPackage
     private static bool IsManifestName(string p) =>
         p.Equals("imsmanifest.xml", StringComparison.OrdinalIgnoreCase) || p.EndsWith("/imsmanifest.xml", StringComparison.OrdinalIgnoreCase);
 
-    private static bool HasBom(byte[] b) => b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF;
 }
