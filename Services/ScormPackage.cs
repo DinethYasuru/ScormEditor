@@ -57,6 +57,14 @@ public sealed class ScormPackage
 
     public void Touch() => LastUsed = DateTimeOffset.UtcNow;
 
+    /// <summary>Editor pages showing the package, and when the last one closed (see ScormPackageStore).</summary>
+    internal int Viewers { get; set; }
+    internal DateTimeOffset? ClosedAt { get; set; }
+
+    /// <summary>The page in the preview and the file in the Code tab, so a reopened editor shows them again.</summary>
+    public string? LastPreviewPath { get; set; }
+    public string? LastCodePath { get; set; }
+
     internal void Expire() => Expired?.Invoke();
 
     public ScormPackage(string fileName, IEnumerable<KeyValuePair<string, byte[]>> files)
