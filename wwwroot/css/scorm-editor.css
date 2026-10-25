@@ -494,7 +494,11 @@
 .se-term.missing { background: #fff4f4; }
 .se-term-row { display: flex; align-items: center; gap: 8px; }
 .se-term-swatch { flex: none; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, .15); }
-.se-term-words { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.se-term-words { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; border: 0; background: none; padding: 1px 3px; margin: -1px -3px; text-align: left; border-radius: 4px; font: inherit; }
+.se-term-words:hover:not(:disabled) { background: var(--se-select); cursor: pointer; }
+.se-term-words:disabled { cursor: default; }
+.se-term-place { border: 0; background: none; padding: 0; text-align: left; font: inherit; color: inherit; width: 100%; }
+.se-term-place:hover { background: var(--se-sunk); cursor: pointer; }
 .se-term-word { color: var(--se-ink); }
 .se-term.missing .se-term-word { color: #b4232f; }
 .se-term-use { color: #0e6b62; font-size: 0.76rem; }

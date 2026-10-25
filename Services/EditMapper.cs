@@ -186,7 +186,8 @@ public static class EditMapper
         return (new Result(ws.Changes(), []), hits);
     }
 
-    public sealed record TermHit(int Term, string Path, string Before, string Text, string After);
+    /// <summary>A word check hit. Anchor is the part of the address after # that shows it, when the page shows it on its own route (a Rise lesson).</summary>
+    public sealed record TermHit(int Term, string Path, string Before, string Text, string After, string? Anchor = null);
 
     /// <summary>
     /// Finds every term of a word list in text learners see, the same places find and replace
@@ -202,18 +203,80 @@ public static class EditMapper
         var re = new Regex(pattern, matchCase ? RegexOptions.ExplicitCapture : RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase, RegexTimeout);
         var ws = new Workspace(package);
         var hits = new List<TermHit>();
+        var lessons = new Dictionary<Container, List<(int Start, int End, string Id)>>();
         foreach (var (where, m) in ws.FindAll(re, ""))
         {
             if (ReaderText(where, m.Index) is not var (lo, hi)) continue;
             var term = order.First(i => m.Groups["t" + i].Success);
             var text = where.Text;
+            string? anchor = null;
+            if (where is Blob)
+            {
+                if (!lessons.TryGetValue(where, out var ranges)) lessons[where] = ranges = Lessons(text);
+                foreach (var r in ranges)
+                    if (m.Index >= r.Start && m.Index < r.End) { anchor = "#/lessons/" + r.Id; break; }
+            }
             hits.Add(new TermHit(term, where.File.Path,
                 Readable(text, Math.Max(lo, m.Index - 50), m.Index, true),
                 Readable(text, m.Index, m.Index + m.Length, false),
-                Readable(text, m.Index + m.Length, Math.Min(hi, m.Index + m.Length + 50), false)));
+                Readable(text, m.Index + m.Length, Math.Min(hi, m.Index + m.Length + 50), false), anchor));
             if (hits.Count >= max) break;
         }
         return hits;
+    }
+
+    // Where each lesson of Rise course data sits in the decoded JSON (the objects in a "lessons"
+    // array, with their "id"), so a hit can open the lesson it is in: Rise shows a lesson at
+    // #/lessons/{id}.
+    private static List<(int Start, int End, string Id)> Lessons(string json)
+    {
+        var found = new List<(int, int, string)>();
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            var reader = new System.Text.Json.Utf8JsonReader(bytes, new System.Text.Json.JsonReaderOptions { MaxDepth = 512 });
+            var lessonsDepth = -1;              // depth of the "lessons" array being read
+            string? property = null;
+            long start = 0;
+            string? id = null;
+            // Byte offsets to string offsets, counting forward only (lessons come in order).
+            int byteDone = 0, charDone = 0;
+            int CharAt(int bytePos)
+            {
+                charDone += Encoding.UTF8.GetCharCount(bytes, byteDone, bytePos - byteDone);
+                byteDone = bytePos;
+                return charDone;
+            }
+            while (reader.Read())
+            {
+                switch (reader.TokenType)
+                {
+                    case System.Text.Json.JsonTokenType.PropertyName:
+                        property = reader.GetString();
+                        continue;
+                    case System.Text.Json.JsonTokenType.StartArray when lessonsDepth < 0 && property == "lessons":
+                        lessonsDepth = reader.CurrentDepth;
+                        break;
+                    case System.Text.Json.JsonTokenType.EndArray when reader.CurrentDepth == lessonsDepth:
+                        lessonsDepth = -1;
+                        break;
+                    case System.Text.Json.JsonTokenType.StartObject when lessonsDepth >= 0 && reader.CurrentDepth == lessonsDepth + 1:
+                        start = reader.TokenStartIndex;
+                        id = null;
+                        break;
+                    case System.Text.Json.JsonTokenType.String when lessonsDepth >= 0 && reader.CurrentDepth == lessonsDepth + 2 && property == "id":
+                        id = reader.GetString();
+                        break;
+                    case System.Text.Json.JsonTokenType.EndObject when lessonsDepth >= 0 && reader.CurrentDepth == lessonsDepth + 1:
+                        if (id is { Length: > 0 })
+                            found.Add((CharAt((int)start), CharAt((int)reader.BytesConsumed), id));
+                        break;
+                }
+                property = null;
+            }
+        }
+        catch (System.Text.Json.JsonException) { }
+        return found;
     }
 
     // Text a learner reads: in a page, outside tags, scripts and styles; in script data, inside a
