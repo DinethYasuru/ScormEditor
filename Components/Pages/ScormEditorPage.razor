@@ -41,6 +41,10 @@
                 <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="OpenFind" title="Find text anywhere in the course and replace it">
                     <span class="oi oi-magnifying-glass me-1" aria-hidden="true"></span>Find and replace
                 </button>
+                <button type="button" class="btn btn-sm @(termsOpen ? "btn-secondary" : "btn-outline-secondary")" @onclick="ToggleTerms" aria-pressed="@termsOpen"
+                        title="Point out words from your word list that should be replaced. Nothing is changed for you.">
+                    <span class="oi oi-spreadsheet me-1" aria-hidden="true"></span>Word check
+                </button>
                 @if (Package.UndoLabel is { } undoLabel)
                 {
                     <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="UndoLast" title="Undo: @undoLabel">
@@ -100,7 +104,7 @@
         </div>
     }
 
-    <div class="se-grid @(sideOpen ? null : "side-closed")" hidden="@(Package is null)">
+    <div class="se-grid @(sideOpen ? null : "side-closed") @(termsOpen ? "terms-open" : null)" hidden="@(Package is null)">
         @* Package: course structure, manifest facts and the file tree. It folds into a thin rail to
            give the editor the full width. *@
         @if (!sideOpen)
@@ -346,6 +350,115 @@
             </div>
             </div>
         </section>
+
+        @if (termsOpen && terms is not null)
+        {
+            <section class="se-pane se-terms" aria-label="Word check">
+                <div class="se-pane-header">
+                    <span class="flex-grow-1">Word check</span>
+                    <button type="button" class="btn btn-sm btn-link p-0" title="Copy the counts as text" @onclick="CopyTermReport">Copy report</button>
+                    <button type="button" class="btn btn-sm btn-link p-0 ms-2" title="@(terms.Editing ? "Close the word list" : "Change the word list")" @onclick="ToggleTermEditor">@(terms.Editing ? "Close list" : "Edit list")</button>
+                    <button type="button" class="btn-close ms-2" aria-label="Close word check" title="Close and remove the highlights" @onclick="ToggleTerms"></button>
+                </div>
+                @if (terms.Editing)
+                {
+                    <div class="se-terms-edit">
+                        <label class="form-label small mb-1" for="se-terms-list">One word per line: the old word, a Tab (or <code>-&gt;</code>), then the new word.</label>
+                        <textarea id="se-terms-list" class="form-control form-control-sm" rows="10" spellcheck="false" @bind="terms.Draft" @bind:event="oninput"></textarea>
+                        <div class="d-flex flex-wrap gap-3 small mt-2">
+                            <label class="form-check mb-0"><input type="checkbox" class="form-check-input" @bind="terms.DraftCase" /> Match case</label>
+                            <label class="form-check mb-0"><input type="checkbox" class="form-check-input" @bind="terms.DraftWhole" /> Whole words only</label>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <button type="button" class="btn btn-sm btn-primary" @onclick="SaveTermList">Save and check</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => terms.Draft = TermList.Default" title="Put back the IFS Academy list">Use the default list</button>
+                        </div>
+                    </div>
+                }
+                <div class="se-terms-summary">
+                    @{
+                        var total = terms.Hits.Count;
+                        var found = terms.Terms.Where((_, i) => terms.CourseCount(i) > 0).Count();
+                        var pageTotal = terms.PageCounts.Sum();
+                    }
+                    <div><strong>@total @(total == 1 ? "place" : "places")</strong> in the course · @found of @terms.Terms.Count words found</div>
+                    <div class="text-muted">This page: @pageTotal @(pageTotal == 1 ? "match" : "matches")@(terms.Frames > 0 ? $" (page and {terms.Frames} {(terms.Frames == 1 ? "frame" : "frames")})" : "")@(terms.PageHidden.Sum() is > 0 and var hid ? $", {hid} in hidden parts such as other tabs or slides" : "")</div>
+                    <div class="se-terms-note">Words are only pointed out, never replaced. Change each one yourself where the new word keeps the meaning.</div>
+                    <label class="form-check mb-0"><input type="checkbox" class="form-check-input" checked="@terms.Chips" @onchange="ToggleTermChips" /> Show the new word next to each match</label>
+                    <label class="form-check mb-0"><input type="checkbox" class="form-check-input" @bind="terms.HideMissing" @bind:after="SaveTermPrefs" /> Hide words not found</label>
+                    @if (terms.Blocked.Length > 0)
+                    {
+                        <div class="se-terms-warn">@terms.Blocked.Length @(terms.Blocked.Length == 1 ? "frame is" : "frames are") from another site and can't be checked here.</div>
+                    }
+                    @if (terms.Hits.Count >= TermState.MaxHits)
+                    {
+                        <div class="se-terms-warn">Only the first @TermState.MaxHits places are counted.</div>
+                    }
+                </div>
+                <div class="se-pane-body se-terms-list">
+                    @for (var i = 0; i < terms.Terms.Count; i++)
+                    {
+                        var index = i;
+                        var term = terms.Terms[i];
+                        var inCourse = terms.CourseCount(i);
+                        var onPage = i < terms.PageCounts.Length ? terms.PageCounts[i] : 0;
+                        var hidden = i < terms.PageHidden.Length ? terms.PageHidden[i] : 0;
+                        if (inCourse == 0 && onPage == 0 && terms.HideMissing) continue;
+                        <div class="se-term @(inCourse + onPage == 0 ? "missing" : null)">
+                            <div class="se-term-row">
+                                <span class="se-term-swatch" style="background:@(inCourse + onPage > 0 ? TermState.Colours[i % TermState.Colours.Length] : "transparent")"></span>
+                                <span class="se-term-words">
+                                    <span class="se-term-word">@term.Old</span>
+                                    @if (term.New.Length > 0) { <span class="se-term-use">→ @term.New</span> }
+                                </span>
+                                @if (inCourse > 0)
+                                {
+                                    <button type="button" class="btn btn-sm btn-link p-0 se-term-count" title="Show where in the course" @onclick="() => terms.Open = terms.Open == index ? null : index">
+                                        @inCourse
+                                    </button>
+                                }
+                                else
+                                {
+                                    <span class="se-term-count text-danger" title="@(onPage > 0 ? "Not in the course's own text. On this page it comes from the course player (its menus and buttons)." : "Not found in text learners see")">@(onPage > 0 ? "0" : "not found")</span>
+                                }
+                            </div>
+                            @if (onPage > 0)
+                            {
+                                <div class="se-term-page">
+                                    <span>@(terms.Position.GetValueOrDefault(index) ?? $"{onPage} on this page{(hidden > 0 ? $" ({hidden} hidden)" : "")}")</span>
+                                    <button type="button" class="btn btn-sm btn-light" title="Previous on this page" aria-label="Previous" @onclick="() => TermGo(index, -1)">‹</button>
+                                    <button type="button" class="btn btn-sm btn-light" title="Next on this page" aria-label="Next" @onclick="() => TermGo(index, 1)">›</button>
+                                </div>
+                            }
+                            @if (terms.Open == index)
+                            {
+                                <ul class="se-term-places">
+                                    @foreach (var hit in terms.Hits.Where(h => h.Term == index).Take(50))
+                                    {
+                                        <li>
+                                            @if (ScormPackage.IsHtml(hit.Path))
+                                            {
+                                                <button type="button" class="btn btn-link p-0 se-term-file" title="Show this page in the preview" @onclick="() => PreviewPage(hit.Path)">@hit.Path.Split('/')[^1]</button>
+                                            }
+                                            else
+                                            {
+                                                <span class="se-term-file">@hit.Path.Split('/')[^1]</span>
+                                            }
+                                            @(hit.Before.Length > 0 ? "…" + hit.Before : "")<mark>@hit.Text</mark>@(hit.After.Length > 0 ? hit.After + "…" : "")
+                                        </li>
+                                    }
+                                    @if (inCourse > 50) { <li class="text-muted">and @(inCourse - 50) more</li> }
+                                </ul>
+                            }
+                        </div>
+                    }
+                    @if (terms.Terms.Count == 0)
+                    {
+                        <p class="small text-muted px-2">The word list is empty. Press Edit list to add words.</p>
+                    }
+                </div>
+            </section>
+        }
     </div>
 
     @if (review is not null)
@@ -625,6 +738,7 @@
         advanced = prefs.GetValueOrDefault("advanced") == "1";
         timeOffset = TimeSpan.FromMinutes(int.TryParse(prefs.GetValueOrDefault("tz"), out var tz) ? tz : 0);
         showTips = prefs.GetValueOrDefault("tips") != "0";
+        LoadTermPrefs(prefs.GetValueOrDefault("terms"));
         StateHasChanged();
     }
 
@@ -659,6 +773,7 @@
         var start = package.Manifest?.LaunchPath ?? package.Paths.FirstOrDefault(ScormPackage.IsHtml);
         await OpenFile(start ?? (package.ManifestPath.Length > 0 ? package.ManifestPath : package.Paths.FirstOrDefault()));
         await SetPreview(start);
+        if (termsOpen) ScanCourseTerms();
         return true;
     }
 
@@ -671,6 +786,7 @@
         Package = null;
         review = null;
         find = null;
+        termsOpen = false;
         draftPaths = [];
         UpdateUnsavedFlag();
         await module!.InvokeVoidAsync("setUnsaved", false);
@@ -691,6 +807,7 @@
             downloaded = false;
             confirmStartOver = false;
             UpdateUnsavedFlag();
+            if (termsOpen) ScanCourseTerms();
             StateHasChanged();
         }));
     }
@@ -1011,6 +1128,183 @@
     }
 
     private FindState? find;
+
+    /* ---------- word check ---------- */
+
+    private sealed record TermPrefs(string Text, bool MatchCase, bool WholeWord, bool Chips, bool HideMissing);
+
+    private sealed class TermState
+    {
+        public const int MaxHits = 5000;
+        public static readonly string[] Colours = ["#ffe14d", "#8be9a8", "#9ad0ff", "#ffb3c7", "#ffc98a", "#c9b6ff", "#7ff0e6", "#e6f58a", "#ffd6a5", "#b5ead7"];
+        public string Text { get; set; } = TermList.Default;
+        public bool MatchCase { get; set; } = true;
+        public bool WholeWord { get; set; } = true;
+        public bool Chips { get; set; }
+        public bool HideMissing { get; set; } = true;
+        public IReadOnlyList<TermList.Term> Terms { get; set; } = [];
+        public IReadOnlyList<EditMapper.TermHit> Hits { get; set; } = [];
+        public int[] Counts { get; set; } = [];
+        public int[] PageCounts { get; set; } = [];
+        public int[] PageHidden { get; set; } = [];
+        public int Frames { get; set; }
+        public string[] Blocked { get; set; } = [];
+        public Dictionary<int, string> Position { get; } = [];
+        public int? Open { get; set; }
+        public bool Editing { get; set; }
+        public string Draft { get; set; } = "";
+        public bool DraftCase { get; set; }
+        public bool DraftWhole { get; set; }
+        public int CourseCount(int i) => i < Counts.Length ? Counts[i] : 0;
+    }
+
+    /// <summary>What the preview found on the page shown, sent by JS after each scan.</summary>
+    public sealed record TermsOnPage(int[] Counts, int[] Hidden, int Frames, string[] Blocked);
+
+    private TermState? terms;
+    private bool termsOpen;
+
+    private void LoadTermPrefs(string? json)
+    {
+        terms = new TermState();
+        try
+        {
+            if (json is { Length: > 0 } && System.Text.Json.JsonSerializer.Deserialize<TermPrefs>(json) is { } p)
+            {
+                terms.Text = p.Text;
+                terms.MatchCase = p.MatchCase;
+                terms.WholeWord = p.WholeWord;
+                terms.Chips = p.Chips;
+                terms.HideMissing = p.HideMissing;
+            }
+        }
+        catch (System.Text.Json.JsonException) { }
+        terms.Terms = TermList.Parse(terms.Text, terms.MatchCase);
+    }
+
+    private async Task SaveTermPrefs()
+    {
+        if (terms is null || module is null) return;
+        var prefs = new TermPrefs(terms.Text, terms.MatchCase, terms.WholeWord, terms.Chips, terms.HideMissing);
+        await module.InvokeVoidAsync("setPref", "terms", System.Text.Json.JsonSerializer.Serialize(prefs));
+    }
+
+    private async Task ToggleTerms()
+    {
+        terms ??= new TermState { Terms = TermList.Parse(TermList.Default, true) };
+        termsOpen = !termsOpen;
+        if (termsOpen)
+        {
+            ScanCourseTerms();
+            await SendTerms();
+        }
+        else
+        {
+            terms.Position.Clear();
+            await module!.InvokeVoidAsync("setTerms", (object?)null);
+        }
+    }
+
+    // The whole course, on the server: every page and the data Rise and Storyline build pages from.
+    private void ScanCourseTerms()
+    {
+        if (terms is null || Package is null) return;
+        terms.Hits = EditMapper.ScanTerms(Package, terms.Terms.Select(t => t.Old).ToList(), terms.MatchCase, terms.WholeWord, TermState.MaxHits);
+        var counts = new int[terms.Terms.Count];
+        foreach (var hit in terms.Hits) counts[hit.Term]++;
+        terms.Counts = counts;
+    }
+
+    // The page in the preview, in the browser: highlights, tips and counts for this page.
+    private async Task SendTerms()
+    {
+        if (terms is null || module is null) return;
+        terms.Position.Clear();
+        await module.InvokeVoidAsync("setTerms", new
+        {
+            words = terms.Terms.Select(t => new[] { t.Old, t.New }).ToArray(),
+            cs = terms.MatchCase,
+            whole = terms.WholeWord,
+            chips = terms.Chips,
+        });
+    }
+
+    [JSInvokable]
+    public Task OnTermsOnPage(TermsOnPage result) => InvokeAsync(() =>
+    {
+        if (terms is null) return;
+        terms.PageCounts = result.Counts;
+        terms.PageHidden = result.Hidden;
+        terms.Frames = result.Frames;
+        terms.Blocked = result.Blocked;
+        terms.Position.Clear();
+        StateHasChanged();
+    });
+
+    private async Task TermGo(int index, int dir)
+    {
+        if (terms is null) return;
+        var at = await module!.InvokeAsync<TermPosition?>("termsGo", index, dir);
+        if (at is null) return;
+        terms.Position[index] = $"{at.At} of {at.Of} on this page{(at.Hidden ? " (hidden: on another tab or slide)" : "")}";
+    }
+
+    private sealed record TermPosition(int At, int Of, bool Hidden);
+
+    private void ToggleTermEditor()
+    {
+        if (terms is null) return;
+        terms.Editing = !terms.Editing;
+        terms.Draft = terms.Text;
+        terms.DraftCase = terms.MatchCase;
+        terms.DraftWhole = terms.WholeWord;
+    }
+
+    private async Task SaveTermList()
+    {
+        if (terms is null) return;
+        terms.Text = terms.Draft.Replace("\r\n", "\n");
+        terms.MatchCase = terms.DraftCase;
+        terms.WholeWord = terms.DraftWhole;
+        terms.Terms = TermList.Parse(terms.Text, terms.MatchCase);
+        terms.Editing = false;
+        terms.Open = null;
+        await SaveTermPrefs();
+        ScanCourseTerms();
+        await SendTerms();
+        Show($"Checking {terms.Terms.Count} words.", "info");
+    }
+
+    private async Task ToggleTermChips(ChangeEventArgs e)
+    {
+        if (terms is null) return;
+        terms.Chips = e.Value is true;
+        await SaveTermPrefs();
+        await SendTerms();
+    }
+
+    private async Task CopyTermReport()
+    {
+        if (terms is null || Package is null) return;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Word check report");
+        sb.AppendLine($"Course: {Package.FileName}");
+        sb.AppendLine($"Places in the course: {terms.Hits.Count} | Words found: {terms.Terms.Where((_, i) => terms.CourseCount(i) > 0).Count()} of {terms.Terms.Count}");
+        sb.AppendLine();
+        sb.AppendLine("Old word\tNew word\tIn the course\tOn this page");
+        for (var i = 0; i < terms.Terms.Count; i++)
+            sb.AppendLine($"{terms.Terms[i].Old}\t{terms.Terms[i].New}\t{terms.CourseCount(i)}\t{(i < terms.PageCounts.Length ? terms.PageCounts[i] : 0)}");
+        var places = terms.Hits.Take(1000).ToList();
+        if (places.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Where");
+            foreach (var hit in places)
+                sb.AppendLine($"{terms.Terms[hit.Term].Old}\t{hit.Path}\t…{hit.Before}[{hit.Text}]{hit.After}…");
+        }
+        await module!.InvokeVoidAsync("copyText", sb.ToString());
+        Show("Copied the word check report. Paste it into an email or a spreadsheet.", "success");
+    }
 
     private Task OpenFind() => AfterDrafts(() =>
     {

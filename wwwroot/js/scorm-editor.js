@@ -50,7 +50,7 @@ let unsaved = false;
 export function getPrefs() {
     const prefs = {};
     try {
-        for (const key of ["advanced", "tips"]) prefs[key] = localStorage.getItem("scorm-editor." + key);
+        for (const key of ["advanced", "tips", "terms"]) prefs[key] = localStorage.getItem("scorm-editor." + key);
     } catch { }
     // Minutes ahead of UTC, so the change log shows the user's own time.
     prefs.tz = String(-new Date().getTimezoneOffset());
@@ -243,6 +243,7 @@ function onFrameLoad() {
     if (mode === "edit") enableIn(frame.contentWindow);
     const p = framePath();
     if (p) dotnet.invokeMethodAsync("OnPreviewNavigated", p);
+    if (terms) scanTerms();
 }
 
 /* ---------- visual editing ----------
@@ -413,6 +414,9 @@ function editTarget(t, inputType) {
     const r = sel.getRangeAt(0);
     let el = elementOf(r.startContainer) === elementOf(r.endContainer) ? elementOf(r.startContainer) : elementOf(r.commonAncestorContainer);
     if (!el) return null;
+    // A word check highlight is not part of the course; the edit belongs to the element around it.
+    const mark = el.closest("mark[data-se-term]");
+    if (mark) el = mark.parentElement;
     let structural = elementOf(r.startContainer)?.closest(BLOCKS) !== elementOf(r.endContainer)?.closest(BLOCKS) || STRUCTURAL_INPUT.test(inputType ?? "");
     if (!structural && inputType?.startsWith("delete") && r.collapsed) {
         // Deleting at the very start or end of a block joins it with its neighbour.
@@ -431,6 +435,7 @@ function editTarget(t, inputType) {
 function clean(el) {
     const c = el.cloneNode(true);
     c.querySelectorAll("[data-se-injected]").forEach((n) => n.remove());
+    unmarkTerms(c);
     for (const n of [c, ...c.querySelectorAll("*")]) {
         for (const a of Array.from(n.attributes)) {
             if (a.name.startsWith("data-se-orig-")) {
@@ -736,6 +741,9 @@ function onContextMenu(e) {
     e.preventDefault();
     lastDoc = doc;
     let el = e.target;
+    // Word check highlights aren't part of the course: act on the element they sit in.
+    const added = el.closest?.("mark[data-se-term], [data-se-term-chip]");
+    if (added) el = added.parentElement;
     // Shielded embeds ignore the mouse; find the one under the pointer by position.
     const embed = el.closest?.(EMBEDS) || [...doc.querySelectorAll("[data-se-shield]")].find((x) => {
         const r = x.getBoundingClientRect();
@@ -839,6 +847,10 @@ function editEmbedForm(t, embed) {
 function openUrl(url, t) {
     if (!url) return;
     try { window.open(new URL(url, t.win.location.href).href, "_blank", "noopener"); } catch { }
+}
+
+export function copyText(text) {
+    copy(text);
 }
 
 function copy(text) {
@@ -964,6 +976,289 @@ function form(title, fields, onApply) {
     const first = inputs[fields.find((f) => !f.readonly)?.name];
     (first ?? ok).focus();
     first?.select?.();
+}
+
+/* ---------- word check ----------
+   Highlights words from the word list in the previewed page and every same-origin frame in it,
+   with the suggested word in a tip (and, if asked, next to each word). Nothing is replaced: the
+   highlights are marks the editor adds to the page while it is shown, and copies of the page taken
+   for the review leave them out (see clean). Pages that draw more content later (Rise, Storyline)
+   are scanned again a moment after they change. */
+
+const TERM_COLOURS = ["#ffe14d", "#8be9a8", "#9ad0ff", "#ffb3c7", "#ffc98a", "#c9b6ff", "#7ff0e6", "#e6f58a", "#ffd6a5", "#b5ead7"];
+const TERM_SKIP = /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA|TEMPLATE|SELECT|OPTION|SVG|INPUT|IFRAME|FRAME|OBJECT|EMBED|CANVAS|HEAD|TITLE)$/;
+const TERM_INLINE = /^(A|ABBR|B|BDI|BDO|CITE|CODE|DATA|DFN|EM|FONT|I|KBD|MARK|Q|S|SAMP|SMALL|SPAN|STRONG|SUB|SUP|TIME|U|VAR|LABEL|INS|DEL|NOBR)$/;
+
+let terms = null;                       // { words: [[old, new]], cs, whole, chips }
+let termHits = [];                      // per word: [{ marks: [mark], visible }]
+let termObservers = [];
+let termTimer = 0;
+let termTip = null;
+let termActive = null;
+let termReported = "";
+
+export function setTerms(config) {
+    terms = config && config.words?.length ? config : null;
+    termReported = "";
+    scanTerms();
+}
+
+export function termsGo(index, dir) {
+    const list = termHits[index];
+    if (!list?.length) return null;
+    list.cur = list.cur == null ? (dir > 0 ? 0 : list.length - 1) : (list.cur + dir + list.length) % list.length;
+    const hit = list[list.cur];
+    termActive?.forEach((m) => { m.style.outline = ""; });
+    hit.marks.forEach((m) => { m.style.outline = "3px solid #e0115f"; m.style.outlineOffset = "1px"; });
+    termActive = hit.marks;
+    // Scrolling the match into view would scroll the editor page too; only the course should move.
+    const keep = [window.scrollX, window.scrollY];
+    try { hit.marks[0].scrollIntoView({ block: "center" }); } catch { }
+    window.scrollTo(keep[0], keep[1]);
+    if (hit.visible) setTimeout(() => showTermTip(hit.marks[hit.marks.length - 1], index, 3000), 350);
+    return { at: list.cur + 1, of: list.length, hidden: !hit.visible };
+}
+
+// Every document in the preview the editor can reach, and the frames from other sites it can't.
+function termDocs() {
+    const docs = [], blocked = [];
+    const walk = (doc) => {
+        if (!doc?.body || pathOfWindow(doc.defaultView) == null) return;
+        docs.push(doc);
+        for (const f of doc.querySelectorAll("iframe, frame")) {
+            const inner = safeDoc(f);
+            if (inner?.body) walk(inner);
+            else {
+                const src = f.getAttribute("src") || "";
+                if (src && !/^(about|javascript|data|blob):/i.test(src)) blocked.push(src);
+            }
+        }
+    };
+    try { walk(frame.contentDocument); } catch { }
+    return { docs, blocked };
+}
+
+function clearTermMarks(doc) {
+    doc.querySelectorAll("[data-se-term-chip]").forEach((n) => n.remove());
+    const parents = new Set();
+    for (const m of doc.querySelectorAll("mark[data-se-term]")) {
+        parents.add(m.parentNode);
+        m.replaceWith(...m.childNodes);
+    }
+    parents.forEach((p) => p?.normalize());
+}
+
+// Removes the word check's marks from a copy of an element.
+function unmarkTerms(root) {
+    root.querySelectorAll("[data-se-term-chip]").forEach((n) => n.remove());
+    for (const m of root.querySelectorAll("mark[data-se-term]")) m.replaceWith(...m.childNodes);
+    root.normalize();
+}
+
+function scheduleTermScan() {
+    clearTimeout(termTimer);
+    termTimer = setTimeout(() => scanTerms(true), 700);
+}
+
+let termRe = null, termOrder = [], termSeq = 0;
+
+// A full scan starts over; a later scan (the page drew more content, or the user typed) keeps the
+// marks that still match and only marks new text, and leaves the text being typed in alone so the
+// cursor stays where it is.
+function scanTerms(later) {
+    clearTimeout(termTimer);
+    termObservers.forEach((o) => o.disconnect());
+    termObservers = [];
+    hideTermTip();
+    const { docs, blocked } = termDocs();
+    if (!later) {
+        termActive = null;
+        docs.forEach(clearTermMarks);
+        termRe = null;
+        if (terms) {
+            const words = terms.words.map((w) => w[0]);
+            const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+");
+            termOrder = words.map((_, i) => i).sort((x, y) => words[y].length - words[x].length);
+            const letter = "[\\p{L}\\p{M}\\p{N}_]";
+            const alt = termOrder.map((i) => `(${esc(words[i])})`).join("|");
+            termRe = new RegExp(terms.whole ? `(?<!${letter})(?:${alt})(?!${letter})` : `(?:${alt})`, "gu" + (terms.cs ? "" : "i"));
+        }
+    }
+    termHits = [];
+    if (!terms || !termRe) {
+        reportTerms(docs.length, blocked);
+        return;
+    }
+    for (const doc of docs) {
+        if (later) pruneTermMarks(doc);
+        markTerms(doc, termRe, termOrder);
+    }
+    collectTermHits(docs);
+    // Watch for content the course draws later; the marks just added are not changes to scan for.
+    for (const doc of docs) {
+        const o = new MutationObserver(scheduleTermScan);
+        o.observe(doc.body, { childList: true, subtree: true, characterData: true });
+        termObservers.push(o);
+    }
+    reportTerms(docs.length, blocked);
+}
+
+function selectionNodes(doc) {
+    const sel = doc.getSelection();
+    return sel && sel.rangeCount ? [sel.anchorNode, sel.focusNode] : [];
+}
+
+// Marks whose text was edited so it no longer matches are taken off (unless the cursor is in them).
+function pruneTermMarks(doc) {
+    const caret = selectionNodes(doc);
+    const groups = new Map();
+    for (const m of doc.querySelectorAll("mark[data-se-term]")) {
+        const id = m.getAttribute("data-se-term-hit");
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(m);
+    }
+    for (const marks of groups.values()) {
+        const text = marks.map((m) => m.textContent).join("");
+        termRe.lastIndex = 0;
+        const m = termRe.exec(text);
+        if (m && m.index === 0 && m[0].length === text.length) continue;
+        if (marks.some((x) => caret.some((n) => n && x.contains(n)))) continue;
+        for (const x of marks) {
+            const parent = x.parentNode;
+            x.nextSibling?.hasAttribute?.("data-se-term-chip") && x.nextSibling.remove();
+            x.replaceWith(...x.childNodes);
+            parent?.normalize();
+        }
+    }
+}
+
+function collectTermHits(docs) {
+    termHits = terms.words.map(() => []);
+    const byId = new Map();
+    for (const doc of docs) {
+        for (const m of doc.querySelectorAll("mark[data-se-term]")) {
+            const id = m.getAttribute("data-se-term-hit");
+            let hit = byId.get(id);
+            if (!hit) {
+                hit = { marks: [], visible: false };
+                byId.set(id, hit);
+                termHits[+m.getAttribute("data-se-term")]?.push(hit);
+            }
+            hit.marks.push(m);
+        }
+    }
+    for (const list of termHits) for (const hit of list) hit.visible = hit.marks.some((m) => m.getClientRects().length > 0);
+}
+
+function markTerms(doc, re, order) {
+    // Text is matched across inline elements (a word half in bold still counts), block by block.
+    const blockOf = (n) => {
+        for (let p = n.parentNode; p && p !== doc.body; p = p.parentNode) if (p.nodeType !== 1 || !TERM_INLINE.test(p.nodeName)) return p;
+        return doc.body;
+    };
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => n.nodeType === 1
+            ? (TERM_SKIP.test(n.nodeName) || n.hasAttribute("data-se-injected") || n.hasAttribute("data-se-term") || n.hasAttribute("data-se-term-chip")
+                ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP)
+            : (n.nodeValue ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+    });
+    const caret = selectionNodes(doc);
+    const groups = [];
+    let cur = null, curBlock = null;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (caret.includes(n)) { cur = null; continue; }
+        const b = blockOf(n);
+        if (!cur || b !== curBlock) { cur = { nodes: [], text: "" }; groups.push(cur); curBlock = b; }
+        cur.nodes.push({ n, s: cur.text.length });
+        cur.text += n.nodeValue;
+    }
+    for (const g of groups) {
+        if (!/[\p{L}\p{N}]/u.test(g.text)) continue;
+        const segs = g.nodes.map(() => []);
+        re.lastIndex = 0;
+        let m, k = 0;
+        while ((m = re.exec(g.text))) {
+            if (!m[0]) { re.lastIndex++; continue; }
+            const idx = order[m.slice(1).findIndex((x) => x !== undefined)];
+            const hit = ++termSeq;
+            const a = m.index, e = a + m[0].length;
+            while (k < g.nodes.length - 1 && g.nodes[k + 1].s <= a) k++;
+            for (let j = k; j < g.nodes.length && g.nodes[j].s < e; j++) {
+                const ns = g.nodes[j].s, ne = ns + g.nodes[j].n.nodeValue.length;
+                if (ne <= a) continue;
+                segs[j].push({ s: Math.max(a, ns) - ns, e: Math.min(e, ne) - ns, hit, idx, last: ne >= e });
+            }
+        }
+        g.nodes.forEach((o, j) => {
+            if (!segs[j].length) return;
+            const text = o.n.nodeValue, f = doc.createDocumentFragment();
+            let last = 0;
+            for (const sg of segs[j]) {
+                if (sg.s > last) f.append(text.slice(last, sg.s));
+                const mark = doc.createElement("mark");
+                mark.setAttribute("data-se-term", sg.idx);
+                mark.setAttribute("data-se-term-hit", sg.hit);
+                mark.style.cssText = `background:${TERM_COLOURS[sg.idx % TERM_COLOURS.length]}!important;color:#111!important;padding:0!important;border-radius:2px;cursor:help`;
+                mark.textContent = text.slice(sg.s, sg.e);
+                mark.addEventListener("mouseenter", () => showTermTip(mark, sg.idx));
+                mark.addEventListener("mouseleave", hideTermTip);
+                f.append(mark);
+                last = sg.e;
+                const replacement = terms.words[sg.idx][1];
+                if (sg.last && terms.chips && replacement) {
+                    const chip = doc.createElement("span");
+                    chip.setAttribute("data-se-term-chip", "");
+                    chip.contentEditable = "false";
+                    chip.style.cssText = "all:initial;display:inline;background:#1b2230!important;color:#ffe14d!important;font:600 11px/1.2 system-ui,sans-serif;padding:1px 5px;margin:0 2px 0 3px;border-radius:4px;white-space:normal;user-select:none";
+                    chip.textContent = "→ " + replacement;
+                    f.append(chip);
+                }
+            }
+            if (last < text.length) f.append(text.slice(last));
+            o.n.parentNode?.replaceChild(f, o.n);
+        });
+    }
+}
+
+function reportTerms(pages, blocked) {
+    const result = {
+        counts: termHits.map((l) => l.length),
+        hidden: termHits.map((l) => l.filter((h) => !h.visible).length),
+        frames: Math.max(0, pages - 1),
+        blocked: [...new Set(blocked)].slice(0, 6),
+    };
+    const key = JSON.stringify(result);
+    if (key === termReported) return;
+    termReported = key;
+    dotnet.invokeMethodAsync("OnTermsOnPage", result);
+}
+
+// The tip is drawn on the editor page over the preview, so nothing more is added to the course.
+function showTermTip(mark, index, ms) {
+    if (!terms || !mark.isConnected) return;
+    hideTermTip();
+    termTip = document.createElement("div");
+    termTip.className = "se-term-tip";
+    const old = document.createElement("div");
+    old.className = "se-term-old";
+    old.textContent = terms.words[index][0];
+    const next = document.createElement("div");
+    next.className = "se-term-new";
+    next.textContent = terms.words[index][1] ? "Use: " + terms.words[index][1] : "No replacement set";
+    termTip.append(old, next);
+    document.body.append(termTip);
+    const r = mark.getBoundingClientRect();
+    const top = pagePoint(mark.ownerDocument, r.left, r.top), bottom = pagePoint(mark.ownerDocument, r.left, r.bottom);
+    let y = top.y - termTip.offsetHeight - 6;
+    if (y < 4) y = bottom.y + 6;
+    termTip.style.left = Math.max(4, Math.min(top.x, window.innerWidth - termTip.offsetWidth - 4)) + "px";
+    termTip.style.top = y + "px";
+    if (ms) { const t = termTip; setTimeout(() => { if (termTip === t) hideTermTip(); }, ms); }
+}
+
+function hideTermTip() {
+    termTip?.remove();
+    termTip = null;
 }
 
 /* ---------- images ---------- */
