@@ -44,7 +44,7 @@
                 </button>
                 <button type="button" class="btn btn-sm @(termsOpen ? "btn-secondary" : "btn-outline-secondary")" @onclick="ToggleTerms" aria-pressed="@termsOpen"
                         title="Point out words from your word list that should be replaced. Nothing is changed for you.">
-                    <span class="oi oi-spreadsheet me-1" aria-hidden="true"></span>Word check
+                    <span class="oi oi-spreadsheet me-1" aria-hidden="true"></span>ARR Word Check
                 </button>
                 @if (Package.UndoLabel is { } undoLabel)
                 {
@@ -395,12 +395,12 @@
 
         @if (termsOpen && terms is not null)
         {
-            <section class="se-pane se-terms" aria-label="Word check">
+            <section class="se-pane se-terms" aria-label="ARR Word Check">
                 <div class="se-pane-header">
-                    <span class="flex-grow-1">Word check</span>
+                    <span class="flex-grow-1">ARR Word Check</span>
                     <button type="button" class="btn btn-sm btn-link p-0" title="Copy the counts as text" @onclick="CopyTermReport">Copy report</button>
                     <button type="button" class="btn btn-sm btn-link p-0 ms-2" title="@(terms.Editing ? "Close the word list" : "Change the word list")" @onclick="ToggleTermEditor">@(terms.Editing ? "Close list" : "Edit list")</button>
-                    <button type="button" class="btn-close ms-2" aria-label="Close word check" title="Close and remove the highlights" @onclick="ToggleTerms"></button>
+                    <button type="button" class="btn-close ms-2" aria-label="Close ARR Word Check" title="Close and remove the highlights" @onclick="ToggleTerms"></button>
                 </div>
                 @if (terms.Editing)
                 {
@@ -423,7 +423,14 @@
                         var found = terms.Terms.Where((_, i) => terms.CourseCount(i) > 0).Count();
                         var pageTotal = terms.PageCounts.Sum();
                     }
-                    <div><strong>@total @(total == 1 ? "place" : "places")</strong> in the course · @found of @terms.Terms.Count words found</div>
+                    @if (terms.Counting)
+                    {
+                        <div class="se-terms-busy"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Counting the whole course…</div>
+                    }
+                    else
+                    {
+                        <div><strong>@total @(total == 1 ? "place" : "places")</strong> in the course · @found of @terms.Terms.Count words found</div>
+                    }
                     <div class="text-muted">This page: @pageTotal @(pageTotal == 1 ? "match" : "matches")@(terms.Frames > 0 ? $" (page and {terms.Frames} {(terms.Frames == 1 ? "frame" : "frames")})" : "")@(terms.PageHidden.Sum() is > 0 and var hid ? $", {hid} in hidden parts such as other tabs or slides" : "")</div>
                     <div class="se-terms-note">Words are only pointed out, never replaced. Change each one yourself where the new word keeps the meaning.</div>
                     <label class="form-check mb-0"><input type="checkbox" class="form-check-input" checked="@terms.Chips" @onchange="ToggleTermChips" /> Show the new word next to each match</label>
@@ -1219,6 +1226,9 @@
         public IReadOnlyList<TermList.Term> Terms { get; set; } = [];
         public IReadOnlyList<EditMapper.TermHit> Hits { get; set; } = [];
         public int[] Counts { get; set; } = [];
+        public bool Counting { get; set; }
+        public int ScanId { get; set; }
+        public string? ScannedKey { get; set; }
         public int[] PageCounts { get; set; } = [];
         public int[] PageHidden { get; set; } = [];
         public int Frames { get; set; }
@@ -1283,19 +1293,39 @@
     private void ScanCourseTerms()
     {
         if (terms is null || Package is null) return;
-        try
+        // Nothing changed since the last count (the panel was closed and opened again): keep it.
+        var key = $"{Package.Id}|{version}|{terms.MatchCase}|{terms.WholeWord}|{terms.Text}";
+        if (key == terms.ScannedKey) return;
+        terms.ScannedKey = key;
+        // A large course (a Rise course's data runs to megabytes) takes a moment to count, so the
+        // panel opens at once and the counts follow; the page's own highlights don't wait for it.
+        var state = terms;
+        var id = ++state.ScanId;
+        var package = Package;
+        var words = state.Terms.Select(t => t.Old).ToList();
+        var (matchCase, wholeWord, count) = (state.MatchCase, state.WholeWord, state.Terms.Count);
+        state.Counting = true;
+        _ = Task.Run(() =>
         {
-            terms.Hits = EditMapper.ScanTerms(Package, terms.Terms.Select(t => t.Old).ToList(), terms.MatchCase, terms.WholeWord, TermState.MaxHits);
-        }
-        catch (Exception ex) when (ex is System.Text.RegularExpressions.RegexMatchTimeoutException or ArgumentException or InvalidOperationException or IndexOutOfRangeException)
+            try { return (Hits: EditMapper.ScanTerms(package, words, matchCase, wholeWord, TermState.MaxHits), Error: (string?)null); }
+            catch (Exception ex) { return (Hits: (IReadOnlyList<EditMapper.TermHit>)[], Error: $"{ex.GetType().Name}: {ex.Message}"); }
+        }).ContinueWith(t => InvokeAsync(() =>
         {
+            if (id != state.ScanId) return;      // a newer count is on its way
+            var (hits, error) = t.Result;
+            state.Hits = hits;
+            var counts = new int[count];
+            foreach (var hit in hits) if (hit.Term < count) counts[hit.Term]++;
+            state.Counts = counts;
+            state.Counting = false;
             // A failed scan must never close the editor: show what happened and keep going.
-            terms.Hits = [];
-            Show($"The word check couldn't read the whole course ({ex.GetType().Name}: {ex.Message}). Counts on the page still work.", "warning");
-        }
-        var counts = new int[terms.Terms.Count];
-        foreach (var hit in terms.Hits) counts[hit.Term]++;
-        terms.Counts = counts;
+            if (error is not null)
+            {
+                state.ScannedKey = null;
+                Show($"The ARR Word Check couldn't read the whole course ({error}). Counts on the page still work.", "warning");
+            }
+            StateHasChanged();
+        }));
     }
 
     // The page in the preview, in the browser: highlights, tips and counts for this page.
@@ -1317,7 +1347,7 @@
     private async Task TryJs(string name, params object?[] args)
     {
         try { await module!.InvokeVoidAsync(name, args); }
-        catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); }
+        catch (JSException ex) { Show($"The ARR Word Check hit a problem in this page: {ex.Message}", "warning"); }
     }
 
     [JSInvokable]
@@ -1337,7 +1367,7 @@
         if (terms is null) return;
         TermPosition? at;
         try { at = await module!.InvokeAsync<TermPosition?>("termsGo", index, dir); }
-        catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); return; }
+        catch (JSException ex) { Show($"The ARR Word Check hit a problem in this page: {ex.Message}", "warning"); return; }
         if (at is null) return;
         terms.Position[index] = Describe(at);
     }
@@ -1374,7 +1404,7 @@
                 await module!.InvokeVoidAsync("loadPreviewAt", place.Path, place.Anchor);
             }
         }
-        catch (JSException ex) { Show($"The word check hit a problem in this page: {ex.Message}", "warning"); }
+        catch (JSException ex) { Show($"The ARR Word Check hit a problem in this page: {ex.Message}", "warning"); }
     });
 
     [JSInvokable]
@@ -1421,7 +1451,7 @@
     {
         if (terms is null || Package is null) return;
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("Word check report");
+        sb.AppendLine("ARR Word Check report");
         sb.AppendLine($"Course: {Package.FileName}");
         sb.AppendLine($"Places in the course: {terms.Hits.Count} | Words found: {terms.Terms.Where((_, i) => terms.CourseCount(i) > 0).Count()} of {terms.Terms.Count}");
         sb.AppendLine();
@@ -1437,7 +1467,7 @@
                 sb.AppendLine($"{terms.Terms[hit.Term].Old}\t{hit.Path}\t…{hit.Before}[{hit.Text}]{hit.After}…");
         }
         await TryJs("copyText", sb.ToString());
-        Show("Copied the word check report. Paste it into an email or a spreadsheet.", "success");
+        Show("Copied the ARR Word Check report. Paste it into an email or a spreadsheet.", "success");
     }
 
     private Task OpenFind() => AfterDrafts(() =>
