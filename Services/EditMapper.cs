@@ -38,6 +38,7 @@ public static class EditMapper
     public sealed record Result(IReadOnlyList<FileChange> Files, IReadOnlyList<Problem> Problems);
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ScanTimeout = TimeSpan.FromSeconds(10);
     private static readonly Regex Base64Literal = new(@"([""'])([A-Za-z0-9+/]{200,}={0,2})\1", RegexOptions.None, RegexTimeout);
     private static readonly Regex HtmlNearby = new(@"<[a-zA-Z/][^<>]{0,200}>|&[a-zA-Z]+;|&#\d+;", RegexOptions.None, RegexTimeout);
     private static readonly string[] SearchExtensions = [".html", ".htm", ".xhtml", ".js", ".mjs", ".json", ".xml"];
@@ -210,12 +211,15 @@ public static class EditMapper
     {
         var order = Enumerable.Range(0, terms.Count).Where(i => terms[i].Trim().Length > 0).OrderByDescending(i => terms[i].Length).ToList();
         if (order.Count == 0) return [];
-        var pattern = string.Join("|", order.Select(i => Bounded($"(?<t{i}>{Flexible(terms[i], 0, terms[i].Length, [])})", terms[i].Trim(), wholeWord)));
-        var re = new Regex(pattern, matchCase ? RegexOptions.ExplicitCapture : RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase, RegexTimeout);
+        var re = TermRegex(terms, order, matchCase);
         var ws = new Workspace(package);
         var hits = new List<TermHit>();
         var lessons = new Dictionary<Container, List<(int Start, int End, string Id)>>();
-        foreach (var (where, m) in ws.FindAll(re, ""))
+        // Whole words are checked after a match rather than in the pattern: a pattern that starts
+        // with a lookbehind can't jump ahead to the next likely letter, which made a Rise course's
+        // megabytes of data take seconds (or time out).
+        bool Accept(string text, Match m) => !wholeWord || WholeWordAt(text, m.Index, m.Length);
+        foreach (var (where, m) in ws.FindAll(re, "", Accept))
         {
             if (ReaderText(where, m.Index) is not var (lo, hi)) continue;
             var term = order.First(i => m.Groups["t" + i].Success);
@@ -234,6 +238,33 @@ public static class EditMapper
             if (hits.Count >= max) break;
         }
         return hits;
+    }
+
+    private static readonly Dictionary<string, Regex> TermRegexes = [];
+
+    // One compiled pattern for the whole list (longest words first), kept while the list is the same.
+    private static Regex TermRegex(IReadOnlyList<string> terms, List<int> order, bool matchCase)
+    {
+        var pattern = string.Join("|", order.Select(i => $"(?<t{i}>{Flexible(terms[i], 0, terms[i].Length, [])})"));
+        lock (TermRegexes)
+        {
+            var key = (matchCase ? "1" : "0") + pattern;
+            if (TermRegexes.TryGetValue(key, out var re)) return re;
+            if (TermRegexes.Count > 20) TermRegexes.Clear();
+            var options = RegexOptions.ExplicitCapture | RegexOptions.Compiled | (matchCase ? RegexOptions.None : RegexOptions.IgnoreCase);
+            return TermRegexes[key] = new Regex(pattern, options, ScanTimeout);
+        }
+    }
+
+    // Same rule as Bounded: no letter or digit either side, except next to Japanese, Chinese or Thai.
+    private static bool WholeWordAt(string text, int index, int length)
+    {
+        static bool Word(char c) => char.IsLetterOrDigit(c) || c == '_';
+        var first = text[index];
+        var last = text[index + length - 1];
+        if (Spaced(first) && index > 0 && Word(text[index - 1])) return false;
+        if (Spaced(last) && index + length < text.Length && Word(text[index + length])) return false;
+        return true;
     }
 
     // Where each lesson of Rise course data sits in the decoded JSON (the objects in a "lessons"
@@ -615,14 +646,23 @@ public static class EditMapper
             return _all.Where(c => c.File.Path == page).Concat(_all.Where(c => c.File.Path != page));
         }
 
-        public List<(Container Where, Match Match)> FindAll(Regex re, string page)
+        public List<(Container Where, Match Match)> FindAll(Regex re, string page, Func<string, Match, bool>? accept = null)
         {
             var found = new List<(Container, Match)>();
             foreach (var c in Containers(page))
             {
                 var text = c.Text;
-                foreach (Match m in re.Matches(text))
+                for (var m = re.Match(text); m.Success;)
+                {
+                    if (accept is not null && !accept(text, m))
+                    {
+                        // Rejected: look again from the next character, as a shorter word may start inside.
+                        m = m.Index + 1 < text.Length ? re.Match(text, m.Index + 1) : Match.Empty;
+                        continue;
+                    }
                     if (!c.InsideBlob(m.Index)) found.Add((c, m));
+                    m = m.NextMatch();
+                }
             }
             return found;
         }
