@@ -1,0 +1,270 @@
+@page "/azure"
+@implements IDisposable
+@inject AzureConnections Connections
+@inject AzureBlobService Blobs
+@inject NavigationManager Nav
+
+<PageTitle>Azure Blob</PageTitle>
+
+<div class="se-az-page">
+    <h3 class="mb-1"><span class="oi oi-cloud me-2" aria-hidden="true"></span>Azure Blob</h3>
+    <p class="text-muted">
+        Save the containers where your courses are kept, then open courses from them and save them back from the editor
+        (<strong>Open course</strong> › <strong>From Azure Blob</strong>, and <strong>Save course</strong>).
+    </p>
+
+    <AzurePermissionsNote Full="true" />
+
+    <div class="alert alert-warning small mb-3 d-flex gap-2" role="note">
+        <span class="oi oi-warning mt-1" aria-hidden="true"></span>
+        <div>
+            <strong>Saving to the place a course came from replaces the file there.</strong>
+            Tick <strong>Keep the old file</strong> when you save, and the file already there is first copied into a <code>.OLD</code> folder next to it
+            (as <code>.OLD/name_date_time.zip</code>), the copy is checked, and only then is the new file saved in its place.
+            If anything fails along the way, the original is left as it was.
+        </div>
+    </div>
+
+    @if (Connections.LoadProblem is { } problem)
+    {
+        <div class="alert alert-danger small">@problem</div>
+    }
+
+    <div class="row g-3">
+        <div class="col-lg-5">
+            <div class="se-pane">
+                <div class="se-pane-header"><strong>@(editing is null ? "Add a container" : "Change " + editing.Name)</strong></div>
+                <form class="p-3" @onsubmit="Save" @onsubmit:preventDefault autocomplete="off">
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="az-name">Name</label>
+                        <input id="az-name" class="form-control form-control-sm" @bind="name" @bind:event="oninput" placeholder="For example: Academy courses (prod)" maxlength="80" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="az-sas">Container SAS URL</label>
+                        <input id="az-sas" type="password" class="form-control form-control-sm font-monospace" @bind="sasText" @bind:event="oninput"
+                               placeholder="@(editing is null ? "https://account.blob.core.windows.net/container?sp=rcwl&se=…&sig=…" : "Leave empty to keep the current SAS")"
+                               spellcheck="false" autocomplete="off" />
+                        <div class="form-text">Kept encrypted in this browser only. It is never shown again after you save it.</div>
+                    </div>
+                    @if (Parsed is { } p)
+                    {
+                        <SasSummary Sas="p" />
+                        @if (p.IsBlob)
+                        {
+                            <div class="alert alert-warning small py-2">
+                                This is a SAS for one file, not a container. Saved containers need a container SAS so you can browse, save new files and keep old ones.
+                                To open just this file, use <strong>Open course</strong> › <strong>From Azure Blob</strong> › <strong>Paste a SAS URL</strong> in the editor.
+                            </div>
+                        }
+                    }
+                    else if (sasText.Trim().Length > 0)
+                    {
+                        <div class="alert alert-danger small py-2">@parseError</div>
+                    }
+                    @if (formMessage is not null)
+                    {
+                        <div class="alert alert-@formKind small py-2">@formMessage</div>
+                    }
+                    <div class="d-flex gap-2 justify-content-end">
+                        @if (editing is not null)
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CancelEdit">Cancel</button>
+                        }
+                        <button type="button" class="btn btn-sm btn-outline-primary" disabled="@(!CanTest || busy)" @onclick="Test">Test</button>
+                        <button type="submit" class="btn btn-sm btn-primary" disabled="@(!CanSave || busy)">
+                            @(busy ? "Checking…" : editing is null ? "Save container" : "Save changes")
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="col-lg-7">
+            <div class="se-pane">
+                <div class="se-pane-header"><strong>Saved containers</strong></div>
+                @if (list is null)
+                {
+                    <div class="p-3 text-muted small">Loading…</div>
+                }
+                else if (list.Count == 0)
+                {
+                    <div class="p-3 text-muted small">None yet. Add a container SAS URL on the left.</div>
+                }
+                else
+                {
+                    <ul class="list-unstyled mb-0">
+                        @foreach (var c in list)
+                        {
+                            var conn = c;
+                            var sas = conn.Sas;
+                            <li class="se-az-conn @(browsing?.Id == conn.Id ? "active" : null)">
+                                <div class="d-flex flex-wrap align-items-center gap-2">
+                                    <strong>@conn.Name</strong>
+                                    @if (sas is null)
+                                    {
+                                        <span class="badge text-bg-danger">Unreadable SAS</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted small text-truncate">@sas.Display</span>
+                                        <ExpiryBadge Sas="sas" />
+                                    }
+                                    <span class="ms-auto d-flex gap-1">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" disabled="@(sas is null)" @onclick="() => Browse(conn)">Browse</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(sas is null)" @onclick="() => TestSaved(conn)">Test</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => Edit(conn)">Edit</button>
+                                        <button type="button" class="btn btn-sm @(confirmRemove == conn.Id ? "btn-danger" : "btn-outline-danger")" @onclick="() => Remove(conn)"
+                                                title="Forget this container in this browser. Nothing in Azure is changed.">
+                                            @(confirmRemove == conn.Id ? "Click again to remove" : "Remove")
+                                        </button>
+                                    </span>
+                                </div>
+                                @if (sas is not null)
+                                {
+                                    <div class="small text-muted mt-1">
+                                        Permissions: @sas.PermissionNames
+                                        @if (sas.Missing.Any())
+                                        {
+                                            <span class="text-danger"> · missing @string.Join(", ", sas.Missing.Select(m => m.Name))</span>
+                                        }
+                                    </div>
+                                }
+                                @if (tested.TryGetValue(conn.Id, out var result))
+                                {
+                                    <div class="small mt-1 @(result is null ? "text-success" : "text-danger")">
+                                        @(result ?? "Connected: the files can be listed.")
+                                    </div>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+
+            @if (browsing?.Sas is { } bs)
+            {
+                <div class="se-pane mt-3">
+                    <div class="se-pane-header d-flex align-items-center">
+                        <strong>@browsing.Name</strong>
+                        <span class="text-muted small ms-2">Click a course to open it in the editor.</span>
+                        <button type="button" class="btn-close ms-auto" aria-label="Close" @onclick="() => browsing = null"></button>
+                    </div>
+                    <AzureBrowser Sas="bs" OnFile="OpenInEditor" TimeOffset="timeOffset" />
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<AzureConnection>? list;
+    private AzureConnection? editing, browsing;
+    private string name = "", sasText = "";
+    private string? parseError, formMessage, confirmRemove;
+    private string formKind = "info";
+    private bool busy;
+    private readonly Dictionary<string, string?> tested = [];
+    private TimeSpan timeOffset;
+
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private AzureSas? Parsed => sasText.Trim().Length == 0 ? null : AzureSas.TryParse(sasText, out parseError);
+    private bool CanTest => Parsed is not null;
+    private bool CanSave => name.Trim().Length > 0 && (Parsed is { IsBlob: false } || (editing is not null && sasText.Trim().Length == 0));
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        Connections.Changed += OnChanged;
+        list = await Connections.GetAsync();
+        try { timeOffset = TimeSpan.FromMinutes(await JS.InvokeAsync<int>("scormEditorTimeOffset")); } catch { }
+        StateHasChanged();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(async () => { list = await Connections.GetAsync(); StateHasChanged(); });
+
+    private async Task Test()
+    {
+        if (Parsed is not { } sas) return;
+        busy = true;
+        formMessage = null;
+        var problem = await Blobs.TestAsync(sas);
+        busy = false;
+        (formMessage, formKind) = problem is null ? ("Connected: the files can be listed.", "success") : (problem, "danger");
+    }
+
+    private async Task Save()
+    {
+        if (!CanSave) return;
+        var sas = Parsed;
+        busy = true;
+        formMessage = null;
+        if (sas is not null)
+        {
+            var problem = await Blobs.TestAsync(sas);
+            if (problem is not null)
+            {
+                busy = false;
+                (formMessage, formKind) = (problem + " It was not saved.", "danger");
+                return;
+            }
+        }
+        var conn = editing is null
+            ? new AzureConnection()
+            : new AzureConnection { Id = editing.Id, Added = editing.Added, SasUrl = editing.SasUrl };
+        conn.Name = name.Trim();
+        if (sas is not null) conn.SasUrl = sasText.Trim();
+        await Connections.SaveAsync(conn);
+        busy = false;
+        tested.Remove(conn.Id);
+        var missing = conn.Sas?.Missing.Select(m => m.Name).ToList() ?? [];
+        (formMessage, formKind) = missing.Count == 0
+            ? ($"Saved {conn.Name}.", "success")
+            : ($"Saved {conn.Name}, but its SAS doesn't allow {string.Join(", ", missing)}, so some things won't work.", "warning");
+        editing = null;
+        name = sasText = "";
+    }
+
+    private void Edit(AzureConnection conn)
+    {
+        editing = conn;
+        name = conn.Name;
+        sasText = "";
+        formMessage = null;
+    }
+
+    private void CancelEdit()
+    {
+        editing = null;
+        name = sasText = "";
+        formMessage = null;
+    }
+
+    private async Task TestSaved(AzureConnection conn)
+    {
+        if (conn.Sas is not { } sas) return;
+        tested[conn.Id] = "Checking…";
+        StateHasChanged();
+        tested[conn.Id] = await Blobs.TestAsync(sas);
+    }
+
+    private async Task Remove(AzureConnection conn)
+    {
+        if (confirmRemove != conn.Id) { confirmRemove = conn.Id; return; }
+        confirmRemove = null;
+        if (browsing?.Id == conn.Id) browsing = null;
+        if (editing?.Id == conn.Id) CancelEdit();
+        await Connections.DeleteAsync(conn.Id);
+    }
+
+    private void Browse(AzureConnection conn) => browsing = browsing?.Id == conn.Id ? null : conn;
+
+    private void OpenInEditor(string blobName)
+    {
+        if (browsing is null) return;
+        Connections.OpenRequest = (browsing.Id, blobName);
+        Nav.NavigateTo("editor");
+    }
+
+    public void Dispose() => Connections.Changed -= OnChanged;
+}

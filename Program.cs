@@ -1,4 +1,5 @@
 using ScormEditor.Components;
+using Microsoft.AspNetCore.DataProtection;
 using ScormEditor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,6 +8,15 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<AssetVersion>();
 builder.Services.Configure<ScormEditorOptions>(builder.Configuration.GetSection("ScormEditor"));
 builder.Services.AddSingleton<ScormPackageStore>();
+builder.Services.AddSingleton<AzureBlobService>();
+builder.Services.AddScoped<AzureConnections>();
+
+// Saved Azure SAS URLs are encrypted with these keys before they are stored in the user's browser.
+// The keys must outlive a restart, or saved locations can't be read again: on IIS without a loaded
+// user profile, set ScormEditor:DataProtectionKeysPath to a folder only the app can read.
+var dataProtection = builder.Services.AddDataProtection().SetApplicationName("ScormEditor");
+if (builder.Configuration["ScormEditor:DataProtectionKeysPath"] is { Length: > 0 } keysPath)
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents()

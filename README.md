@@ -12,7 +12,7 @@ Then open http://localhost:5136/editor. Choose your course .zip (or drag it onto
 
 ## What it does
 
-The editor opens in **simple mode**: the course's pages on the left and the course itself, ready to edit, on the right. A short how-to strip explains the four steps (type, right-click, Review and save, Download course) and can be hidden. Drop a course .zip anywhere on the page to open it. Edited text is highlighted in yellow until it is saved, **Start over** undoes every change, and the browser asks before closing the tab while there are changes not yet downloaded. Switch on **Advanced** for the file tree, Code tab, manifest tools, Live reload and the LMS panel described below; the choice is remembered in the browser.
+The editor opens in **simple mode**: the course's pages on the left and the course itself, ready to edit, on the right. A short how-to strip explains the four steps (type, right-click, Review and save, Save course) and can be hidden. Drop a course .zip anywhere on the page to open it. Edited text is highlighted in yellow until it is saved, **Start over** undoes every change, and the browser asks before closing the tab while there are changes not yet downloaded. Switch on **Advanced** for the file tree, Code tab, manifest tools, Live reload and the LMS panel described below; the choice is remembered in the browser.
 
 The package panel sits on the left and folds into a thin rail (the arrow in its header) to give the editor the full width; the work area has two tabs, **Preview** and **Code**. Clicking a file opens it in the Code tab; the eye icon next to a page, or a course item, opens it in the Preview tab.
 
@@ -30,7 +30,18 @@ The package panel sits on the left and folds into a thin rail (the arrow in its 
 - **Change log**: the **changed files** badge opens a log of what was changed and when, and the downloaded course includes it as `scorm-editor-changes.txt` (LMSs ignore files the manifest doesn't list).
 - **LMS panel**: the preview answers SCORM 1.2 (`window.API`) and 2004 (`window.API_1484_11`) calls, showing status, score, location and a log of every call.
 - **Sync manifest**: rewrites the launch resource's `<file>` list so it names every file in the package.
-- **Export .zip**: downloads the edited package with `imsmanifest.xml` as the first entry.
+- **Save course**: saves the edited package (with `imsmanifest.xml` as the first entry) back where it came from, to an Azure Blob container, to a folder on this computer, or as a download. See below.
+
+## Azure Blob and saving
+
+**Open course** offers **From this computer** and **From Azure Blob**; **Save course** offers **Back where it came from**, **Azure Blob**, **A folder on this computer** and **Download**, so every combination works (Azure to Azure, local to Azure, Azure to local, local to local).
+
+- **Azure Blob page** (left menu): add containers by name and **container SAS URL**. The page says which permissions to give: **Read, Create, Write and List** (Read and List are enough to only open courses). Delete is never needed: the editor deletes nothing. Each entry shows where it points, which permissions it has or lacks, and when it expires; **Test** checks it against Azure, **Browse** lists its folders and opens a course in the editor.
+- **Where SAS URLs are kept**: in the user's own browser (localStorage), encrypted by the server with ASP.NET Core Data Protection (`ProtectedLocalStorage`), so each user only has their own and the stored value is unreadable without the server's keys. A saved SAS is never sent back to the browser in plain text, and SAS URLs are not logged (the Azure SDK's logging is off, and error messages are built from status codes only). If the server's keys change (a new server, or IIS without a user profile), saved containers can't be unlocked and the page asks the user to add them again; set `ScormEditor:DataProtectionKeysPath` to a folder only the app can read to keep the keys across restarts and deployments.
+- **A one-off SAS URL**: **From Azure Blob › Paste a SAS URL** opens a course from a container SAS or a SAS for a single .zip without saving it.
+- **Replacing a file**: saving where a file already exists says so first and needs a second click. **Keep the old file** (ticked by default) first copies the file that is there into a `.OLD` folder next to it, as `.OLD/name_yyyy-MM-dd_HH-mm-ss.zip` (never over an older copy), reads the copy back and compares it, and only then writes the new file in its place.
+- **Safety**: in Azure the new file is uploaded only if the blob is still the one that was checked (ETag), the upload is all or nothing, and the saved size and MD5 are checked afterwards. If anyone changed the blob after it was opened, the save stops and offers **Replace anyway**. If a step fails, the original stays as it was and the message says whether a .OLD copy was made. A SAS for a single blob can't create `.OLD`; the editor then uses a saved container SAS for the same container if there is one.
+- **This computer**: in Chrome and Edge the editor uses the File System Access API, so a course opened with **From this computer** can be saved back to the same file, and **A folder on this computer** saves into a folder you choose. Keeping the old file asks for the folder that holds it (browsers only give access to the file itself). The browser writes to a temporary file and swaps it in when done, so a failed save leaves the old file as it was. Other browsers download the course instead. A dragged-in course has no file to go back to, so it is saved elsewhere or downloaded.
 
 ## Server limits
 
@@ -43,7 +54,7 @@ Courses are held in the server's memory while they're open. `appsettings.json` s
 
 ## How the preview works
 
-Open packages are kept in memory (`ScormPackageStore`) and served from `/scorm-preview/{id}/{path}`. Because the course loads from real relative URLs on the same origin as the editor, it finds the stub API through `window.parent`, and Storyline/Rise packages that fetch their own data files work as they would on an LMS. Code edits are written back with `PUT` to the same URL. Preview drafts go to the server for review over SignalR, so `Program.cs` raises the hub's message limit to 64 MB. Packages are dropped when the editor page closes; nothing is written to disk.
+Open packages are kept in memory (`ScormPackageStore`) and served from `/scorm-preview/{id}/{path}`. Because the course loads from real relative URLs on the same origin as the editor, it finds the stub API through `window.parent`, and Storyline/Rise packages that fetch their own data files work as they would on an LMS. Code edits are written back with `PUT` to the same URL. Preview drafts go to the server for review over SignalR, so `Program.cs` raises the hub's message limit to 64 MB. Packages are dropped when the editor page closes; nothing is written to the server's disk.
 
 ## Moving it into the Content Manager
 
@@ -52,7 +63,9 @@ The editor is self-contained, so it can be copied into `IfsContentPortal`:
 - `Services/` (package model, manifest parser, store, preview endpoints, edit mapping and diff)
 - `Components/Pages/ScormEditorPage.razor`
 - `wwwroot/js/scorm-editor.js`, `wwwroot/css/scorm-editor.css`, `wwwroot/lib/codemirror/`
-- In `Program.cs`: `builder.Services.AddSingleton<ScormPackageStore>();` and `app.MapScormPreview();`
+- `Components/Shared/` and `Components/Pages/AzureBlobPage.razor` (Azure Blob page, open and save dialogs)
+- In `Program.cs`: `builder.Services.AddSingleton<ScormPackageStore>();`, `AddSingleton<AzureBlobService>()`, `AddScoped<AzureConnections>()`, the Data Protection setup, and `app.MapScormPreview();`
+- The `Azure.Storage.Blobs` NuGet package
 - Add the CodeMirror `<script>`/`<link>` tags from `Components/App.razor` to your host page.
 
 The preview endpoints have no authentication of their own (the package id is a random GUID). Put them behind the same sign-in as the rest of the portal before deploying.

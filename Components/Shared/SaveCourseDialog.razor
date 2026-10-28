@@ -1,0 +1,340 @@
+@* Save the course: back where it came from, to Azure Blob, to a folder on this computer, or as a download. *@
+@inject AzureConnections Connections
+@inject AzureBlobService Blobs
+
+<div class="se-review-backdrop">
+    <div class="se-review se-az-dialog" role="dialog" aria-modal="true" aria-labelledby="se-save-title">
+        <div class="se-review-head">
+            <h5 id="se-save-title" class="mb-0"><span class="oi oi-data-transfer-download me-2" aria-hidden="true"></span>Save course</h5>
+        </div>
+        <div class="se-review-body">
+            <fieldset class="se-save-dest mb-3" disabled="@busy">
+                <legend class="form-label small mb-1">Where to save it</legend>
+                @if (SourceUsable)
+                {
+                    <label class="se-save-option @(dest == Dest.Source ? "active" : null)">
+                        <input type="radio" class="form-check-input" name="se-dest" checked="@(dest == Dest.Source)" @onchange="() => SetDest(Dest.Source)" />
+                        <span>
+                            <strong>Back where it came from</strong>
+                            <span class="d-block small text-muted text-break">@Package.Source!.Display</span>
+                        </span>
+                    </label>
+                }
+                <label class="se-save-option @(dest == Dest.Azure ? "active" : null)">
+                    <input type="radio" class="form-check-input" name="se-dest" checked="@(dest == Dest.Azure)" @onchange="() => SetDest(Dest.Azure)" />
+                    <span>
+                        <strong>Azure Blob</strong>
+                        <span class="d-block small text-muted">A container you saved on the Azure Blob page.</span>
+                    </span>
+                </label>
+                @if (LocalFiles)
+                {
+                    <label class="se-save-option @(dest == Dest.Local ? "active" : null)">
+                        <input type="radio" class="form-check-input" name="se-dest" checked="@(dest == Dest.Local)" @onchange="() => SetDest(Dest.Local)" />
+                        <span>
+                            <strong>A folder on this computer</strong>
+                            <span class="d-block small text-muted">Choose the folder; a file already there can be kept in .OLD.</span>
+                        </span>
+                    </label>
+                }
+                <label class="se-save-option @(dest == Dest.Download ? "active" : null)">
+                    <input type="radio" class="form-check-input" name="se-dest" checked="@(dest == Dest.Download)" @onchange="() => SetDest(Dest.Download)" />
+                    <span>
+                        <strong>Download</strong>
+                        <span class="d-block small text-muted">Your browser saves it@(LocalFiles ? "" : ", usually in Downloads (this browser can't save into a folder you choose; Chrome and Edge can)").</span>
+                    </span>
+                </label>
+            </fieldset>
+
+            @if (dest == Dest.Azure)
+            {
+                @if (connections is { Count: 0 })
+                {
+                    <AzurePermissionsNote />
+                    <p class="small">No containers saved yet. Add one on the <a href="azure">Azure Blob</a> page first.</p>
+                }
+                else if (connections is not null)
+                {
+                    <div class="row g-2 mb-2">
+                        <div class="col-sm-5">
+                            <label class="form-label small mb-1" for="se-save-conn">Container</label>
+                            <select id="se-save-conn" class="form-select form-select-sm" value="@connId" @onchange="ChooseConnection" disabled="@busy">
+                                @foreach (var c in connections)
+                                {
+                                    <option value="@c.Id">@c.Name</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-sm-7">
+                            <label class="form-label small mb-1" for="se-save-name">File name</label>
+                            <input id="se-save-name" class="form-control form-control-sm" value="@fileName" @onchange="SetName" disabled="@busy" />
+                        </div>
+                    </div>
+                    @if (Conn?.Sas is { } sas)
+                    {
+                        @if (sas.Missing.Any(m => m.Letter is 'c' or 'w'))
+                        {
+                            <div class="alert alert-warning small py-2">This container's SAS doesn't allow @string.Join(" and ", sas.Missing.Where(m => m.Letter is 'c' or 'w').Select(m => m.Name)), so saving may be refused.</div>
+                        }
+                        <div class="small mb-1">Folder: <strong>@(folder.Length == 0 ? "(top of the container)" : folder.TrimEnd('/'))</strong> <span class="text-muted">· click a folder to save there, or a file to replace it</span></div>
+                        <AzureBrowser Sas="sas" PickFolder="true" StartPath="@folder" Selected="@(folder + fileName)" TimeOffset="TimeOffset" OnFolder="SetFolder" OnFile="PickBlob" />
+                    }
+                }
+            }
+            else if (dest == Dest.Local)
+            {
+                <div class="row g-2 mb-2 align-items-end">
+                    <div class="col-sm-5">
+                        <button type="button" class="btn btn-sm btn-outline-primary w-100" @onclick="PickFolder" disabled="@busy">
+                            <span class="oi oi-folder me-1" aria-hidden="true"></span>@(localDirName is null ? "Choose folder…" : "Folder: " + localDirName)
+                        </button>
+                    </div>
+                    <div class="col-sm-7">
+                        <label class="form-label small mb-1" for="se-save-lname">File name</label>
+                        <input id="se-save-lname" class="form-control form-control-sm" value="@fileName" @onchange="SetName" disabled="@busy" />
+                    </div>
+                </div>
+            }
+
+            @if (exists == true && dest != Dest.Download)
+            {
+                <div class="alert alert-warning small py-2 mb-2">
+                    <span class="oi oi-warning me-1" aria-hidden="true"></span>
+                    <strong>@fileName is already there. Saving replaces it.</strong>
+                    @(preserve ? "The file there now is copied into the .OLD folder next to it first." : "Without Keep the old file, the file there now is gone for good.")
+                </div>
+                <label class="form-check small mb-2">
+                    <input type="checkbox" class="form-check-input" @bind="preserve" disabled="@busy" />
+                    <strong>Keep the old file</strong>: move it into a <code>.OLD</code> folder at that location (as <code>.OLD/@BackupExample</code>) and keep the new one in its place.
+                    @if (dest == Dest.Source && !Package.Source!.IsAzure)
+                    {
+                        <span class="d-block text-muted">Your browser will ask you for the folder that holds @fileName, so the .OLD folder can be made there.</span>
+                    }
+                </label>
+            }
+            else if (exists == false && dest is Dest.Azure or Dest.Local)
+            {
+                <div class="small text-muted mb-2"><span class="oi oi-check me-1" aria-hidden="true"></span>No file with this name there yet: it will be saved as a new file.</div>
+            }
+
+            @if (changed)
+            {
+                <div class="alert alert-danger small py-2 mb-2">
+                    <strong>Someone else changed this file after you opened it.</strong> Replacing it loses their changes@(preserve ? " from this location, though a copy is kept in .OLD" : "").
+                    Save to another name to keep both, or press <strong>Replace anyway</strong>.
+                </div>
+            }
+            @if (error is not null)
+            {
+                <div class="alert alert-danger small py-2 mb-0">@error</div>
+            }
+        </div>
+        <div class="se-review-foot">
+            @if (busy)
+            {
+                <span class="small text-muted me-auto">@progress</span>
+            }
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="OnClose" disabled="@busy">Cancel</button>
+            <button type="button" class="btn btn-sm @(exists == true && dest != Dest.Download ? "btn-warning" : "btn-primary")" @onclick="Save" disabled="@(!CanSave || busy)">
+                @SaveLabel
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private enum Dest { Source, Azure, Local, Download }
+
+    [Parameter, EditorRequired] public ScormPackage Package { get; set; } = default!;
+    [Parameter, EditorRequired] public IJSObjectReference Module { get; set; } = default!;
+    [Parameter] public bool LocalFiles { get; set; }
+    [Parameter] public TimeSpan TimeOffset { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>Saved somewhere; the message says where and what happened to the old file.</summary>
+    [Parameter] public EventCallback<string> OnSaved { get; set; }
+    [Parameter] public EventCallback OnDownload { get; set; }
+
+    private Dest dest = Dest.Download;
+    private IReadOnlyList<AzureConnection>? connections;
+    private string? connId, localDirKey, localDirName, error, progress;
+    private string folder = "", fileName = "";
+    private bool? exists;
+    private bool preserve = true, busy, changed, sourceHandle;
+    private int checkSeq;
+
+    private AzureConnection? Conn => connections?.FirstOrDefault(c => c.Id == connId);
+    private bool SourceUsable => Package.Source is { } s && (s.IsAzure || sourceHandle);
+    private string BackupExample => $"{Path.GetFileNameWithoutExtension(fileName)}_{AzureBlobService.Stamp(DateTimeOffset.UtcNow, TimeOffset)}{Path.GetExtension(fileName)}";
+
+    private bool CanSave => dest switch
+    {
+        Dest.Azure => Conn?.Sas is not null && ValidName,
+        Dest.Local => localDirKey is not null && ValidName,
+        _ => true,
+    };
+
+    private bool ValidName => fileName.Length > 0 && fileName.IndexOfAny(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) < 0 && fileName.Trim('.').Length > 0;
+
+    private string SaveLabel => busy ? "Saving…"
+        : dest == Dest.Download ? "Download"
+        : changed ? "Replace anyway"
+        : exists == true ? (preserve ? "Keep old file and replace" : "Replace file")
+        : "Save";
+
+    protected override async Task OnInitializedAsync()
+    {
+        connections = await Connections.GetAsync();
+        connId = connections.FirstOrDefault()?.Id;
+        fileName = Package.Source?.FileName ?? Package.FileName;
+        if (!fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) fileName += ".zip";
+        if (Package.Source is { LocalKey: { } key })
+            sourceHandle = LocalFiles && await Module.InvokeAsync<bool>("hasHandle", key);
+        if (SourceUsable) { dest = Dest.Source; exists = true; }
+    }
+
+    private async Task SetDest(Dest next)
+    {
+        dest = next;
+        error = null;
+        changed = false;
+        exists = next == Dest.Source ? true : null;
+        if (next == Dest.Source) fileName = Package.Source!.FileName;
+        if (next == Dest.Azure) StartInSourceFolder();
+        await Check();
+    }
+
+    // Saving a course from Azure somewhere else in Azure starts in its own folder, when a saved container holds it.
+    private void StartInSourceFolder()
+    {
+        folder = Conn?.Sas is { IsBlob: false } first ? first.Path : "";
+        if (Package.Source is not { Sas: { } from, BlobName: { } blob } || connections is null) return;
+        var match = connections.FirstOrDefault(c => c.Sas is { IsBlob: false } s && s.Account == from.Account && s.Container == from.Container && blob.StartsWith(s.Path));
+        if (match is null) return;
+        connId = match.Id;
+        folder = blob.Contains('/') ? blob[..(blob.LastIndexOf('/') + 1)] : "";
+    }
+
+    private async Task ChooseConnection(ChangeEventArgs e)
+    {
+        connId = e.Value?.ToString();
+        folder = Conn?.Sas is { IsBlob: false } s ? s.Path : "";
+        await Check();
+    }
+
+    private async Task SetFolder(string path) { folder = path; await Check(); }
+
+    private async Task SetName(ChangeEventArgs e)
+    {
+        fileName = (e.Value?.ToString() ?? "").Trim();
+        if (fileName.Length > 0 && !fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) fileName += ".zip";
+        await Check();
+    }
+
+    private async Task PickBlob(string full)
+    {
+        var at = full.LastIndexOf('/');
+        folder = at < 0 ? "" : full[..(at + 1)];
+        fileName = full[(at + 1)..];
+        await Check();
+    }
+
+    private async Task PickFolder()
+    {
+        error = null;
+        try
+        {
+            var picked = await Module.InvokeAsync<PickedFolder?>("pickFolder");
+            if (picked is null) return;
+            localDirKey = picked.Key;
+            localDirName = picked.Name;
+        }
+        catch (JSException) { error = "The browser didn't open the folder chooser. Press Choose folder again."; return; }
+        await Check();
+    }
+
+    // Whether a file with this name is at the chosen place, so the user is told before replacing it.
+    private async Task Check()
+    {
+        changed = false;
+        var seq = ++checkSeq;
+        bool? found = null;
+        try
+        {
+            if (dest == Dest.Azure && Conn?.Sas is { } sas && ValidName)
+                found = await Blobs.PropertiesAsync(AzureBlobService.Container(sas).GetBlobClient(folder + fileName)) is not null;
+            else if (dest == Dest.Local && localDirKey is not null && ValidName)
+                found = await Module.InvokeAsync<bool>("localExists", localDirKey, fileName);
+            else if (dest == Dest.Source) found = true;
+        }
+        catch (AzureBlobService.SaveException ex) { error = ex.Message; }
+        catch (Exception) when (dest == Dest.Azure) { error = "Could not reach the storage account."; }
+        if (seq == checkSeq) exists = found;
+    }
+
+    private async Task Save()
+    {
+        if (!CanSave || busy) return;
+        if (dest == Dest.Download) { await OnDownload.InvokeAsync(); return; }
+        busy = true;
+        error = null;
+        var stamp = AzureBlobService.Stamp(DateTimeOffset.UtcNow, TimeOffset);
+        try
+        {
+            if (dest == Dest.Source && Package.Source is { IsAzure: true } src) await SaveAzure(src.Sas!, src.BlobName!, src.ConnectionName, stamp, src.ETag);
+            else if (dest == Dest.Azure) await SaveAzure(Conn!.Sas!, folder + fileName, Conn.Name, stamp, null);
+            else await SaveLocal(stamp);
+        }
+        catch (AzureBlobService.SaveException ex)
+        {
+            error = ex.Message;
+            if (ex.ChangedSinceOpened) changed = true;
+            if (ex.Exists) { exists = true; error = $"{fileName} has just appeared there. Choose whether to keep the old file, then save again."; }
+        }
+        catch (JSException) { error = "The browser stopped the save. Nothing was replaced. Try again."; }
+        catch (Exception) { error = "Could not reach the storage account. Nothing was replaced. Check your network and try again."; }
+        finally { busy = false; progress = null; }
+    }
+
+    private async Task SaveAzure(AzureSas sas, string blobName, string? connName, string stamp, Azure.ETag? expected)
+    {
+        progress = "Preparing the course…";
+        StateHasChanged();
+        await Module.InvokeVoidAsync("flush");
+        var data = Package.ToZip();
+        var target = AzureBlobService.Blob(sas, sas.IsBlob ? null : blobName);
+        // A SAS for one blob can't create the .OLD copy; use a saved container SAS for the same container.
+        var backupSas = sas.IsBlob
+            ? connections?.Select(c => c.Sas).FirstOrDefault(s => s is { IsBlob: false } && s.Account == sas.Account && s.Container == sas.Container && blobName.StartsWith(s.Path))
+            : sas;
+        progress = exists == true && preserve ? "Keeping the old file in .OLD, then saving…" : "Saving…";
+        StateHasChanged();
+        var result = await Blobs.SaveAsync(target, backupSas is null ? null : AzureBlobService.Container(backupSas), data, preserve,
+            changed ? null : expected, allowReplace: exists == true, stamp);
+        Package.Source = new CourseSource { Sas = sas, BlobName = blobName, ETag = result.ETag, ConnectionName = connName, FileName = Path.GetFileName(blobName) };
+        await OnSaved.InvokeAsync(Done(Package.Source.Display, result.Replaced, result.BackupName));
+    }
+
+    private async Task SaveLocal(string stamp)
+    {
+        progress = exists == true && preserve ? "Keeping the old file in .OLD, then saving…" : "Saving…";
+        StateHasChanged();
+        await Module.InvokeVoidAsync("flush");
+        object target = dest == Dest.Source ? new { fileKey = Package.Source!.LocalKey } : new { dirKey = localDirKey, name = fileName };
+        var r = await Module.InvokeAsync<LocalResult>("saveLocal", $"scorm-export/{Package.Id}", target, exists == true && preserve, stamp, exists == true);
+        if (!r.Ok)
+        {
+            if (r.Exists) { exists = true; error = $"{fileName} has just appeared there. Choose whether to keep the old file, then save again."; }
+            else error = r.Error;
+            return;
+        }
+        Package.Source = new CourseSource { LocalKey = r.FileKey, FileName = r.Name ?? fileName };
+        var where = dest == Dest.Source ? Package.Source.Display : $"This computer › {localDirName} › {r.Name}";
+        await OnSaved.InvokeAsync(Done(where, r.Replaced, r.Backup is null ? null : (dest == Dest.Local ? localDirName + "/" : "") + r.Backup));
+    }
+
+    private static string Done(string where, bool replaced, string? backup) =>
+        $"Saved to {where}." + (replaced ? backup is null ? " It replaced the file that was there." : $" It replaced the file that was there; the old one is kept as {backup}." : "");
+
+    private sealed record PickedFolder(string Key, string Name);
+    private sealed record LocalResult(bool Ok, bool Replaced, string? Backup, string? FileKey, string? Name, string? Error, bool Cancelled, bool Exists);
+}

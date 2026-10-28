@@ -1,0 +1,32 @@
+@* What a pasted SAS URL points at and allows, read from the URL. *@
+<div class="se-az-summary small mb-2">
+    <div><span class="text-muted">Points to</span> <strong>@Sas.Display</strong> <span class="text-muted">(@(Sas.IsBlob ? "one file" : Sas.Path.Length > 0 ? "a folder in a container" : "a container"))</span> <ExpiryBadge Sas="Sas" /></div>
+    @if (Sas.Permissions is null)
+    {
+        <div class="text-muted">Permissions are set by a stored access policy, so they can't be read from the URL. Press Test to check it.</div>
+    }
+    else
+    {
+        <div class="d-flex flex-wrap gap-2 mt-1">
+            @foreach (var (letter, name, use) in AzureSas.Needed)
+            {
+                var ok = Sas.Allows(letter);
+                <span class="badge @(ok ? "text-bg-success" : "text-bg-danger")" title="@(ok ? "Allowed" : "Missing") — used to @use">
+                    <span class="oi @(ok ? "oi-check" : "oi-x")" aria-hidden="true"></span> @name
+                </span>
+            }
+            @if (Sas.Permissions.Contains('d'))
+            {
+                <span class="badge text-bg-light border" title="The editor never deletes anything, so this SAS gives more than it needs.">Delete (not needed)</span>
+            }
+        </div>
+    }
+    @if (!Sas.Https && Sas.Uri.Host is not ("127.0.0.1" or "localhost"))
+    {
+        <div class="text-danger mt-1">This URL uses http, so the SAS is sent unencrypted. Use the https:// address.</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public AzureSas Sas { get; set; } = default!;
+}

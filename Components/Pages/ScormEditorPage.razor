@@ -3,6 +3,8 @@
 @inject IJSRuntime JS
 @inject ScormPackageStore Store
 @inject AssetVersion Assets
+@inject AzureConnections Connections
+@inject AzureBlobService Blobs
 
 <PageTitle>SCORM Editor</PageTitle>
 
@@ -19,7 +21,10 @@
             <h3 class="mb-0">@(Package?.Manifest?.CourseTitle is { Length: > 0 } t ? t : "SCORM Editor")</h3>
             @if (Package is not null)
             {
-                <span class="text-muted small text-truncate" title="@Package.FileName">@Package.FileName</span>
+                <span class="text-muted small text-truncate" title="@(Package.Source?.Display ?? Package.FileName)">
+                    @if (Package.Source?.IsAzure == true) { <span class="oi oi-cloud me-1" aria-hidden="true"></span> }
+                    @(Package.Source?.Display ?? Package.FileName)
+                </span>
                 @if (advanced)
                 {
                     <span class="badge text-bg-primary">@(Package.Manifest?.Version ?? "No manifest")</span>
@@ -33,10 +38,27 @@
             }
         </div>
         <div class="se-actions">
-            <label class="btn btn-sm btn-outline-primary mb-0 @(loading ? "disabled" : "")">
-                <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open course…")
-                <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
-            </label>
+            <div class="dropdown">
+                <button type="button" class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" disabled="@loading">
+                    <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open course")
+                </button>
+                <ul class="dropdown-menu">
+                    <li>
+                        @if (localFiles)
+                        {
+                            <button type="button" class="dropdown-item" @onclick="OpenLocal"><span class="oi oi-laptop me-2" aria-hidden="true"></span>From this computer…</button>
+                        }
+                        else
+                        {
+                            <label class="dropdown-item mb-0" role="button">
+                                <span class="oi oi-laptop me-2" aria-hidden="true"></span>From this computer…
+                                <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
+                            </label>
+                        }
+                    </li>
+                    <li><button type="button" class="dropdown-item" @onclick="OpenAzure"><span class="oi oi-cloud me-2" aria-hidden="true"></span>From Azure Blob…</button></li>
+                </ul>
+            </div>
             @if (Package is not null)
             {
                 <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="OpenFind" title="Find text anywhere in the course and replace it">
@@ -59,8 +81,8 @@
                         <span class="oi oi-reload me-1" aria-hidden="true"></span>@(confirmStartOver ? "Click again to undo everything" : "Start over")
                     </button>
                 }
-                <button type="button" class="btn btn-sm btn-primary" @onclick="Export" title="Download the edited course as a .zip to upload to your LMS">
-                    <span class="oi oi-data-transfer-download me-1" aria-hidden="true"></span>Download course
+                <button type="button" class="btn btn-sm btn-primary" @onclick="OpenSave" title="Save the edited course back where it came from, to Azure Blob, to your computer, or download it">
+                    <span class="oi oi-data-transfer-download me-1" aria-hidden="true"></span>Save course
                 </button>
             }
             <div class="form-check form-switch mb-0 small ms-1 align-self-center" title="Show the file list, code editor, manifest tools and LMS test panel">
@@ -76,7 +98,7 @@
             <li><span class="se-step">1</span>Click any text in the page and type.</li>
             <li><span class="se-step">2</span>Right-click a link, button, video or image to change it. Ctrl+click to go to another page.</li>
             <li><span class="se-step">3</span>Press <strong>Review and save</strong> to check your changes.</li>
-            <li><span class="se-step">4</span>Press <strong>Download course</strong> and upload it to your LMS.</li>
+            <li><span class="se-step">4</span>Press <strong>Save course</strong> to save it back where it came from, to Azure Blob or to your computer.</li>
             <li class="ms-auto"><button type="button" class="btn btn-sm btn-link p-0" @onclick="HideTips">Hide tips</button></li>
         </ol>
     }
@@ -96,12 +118,26 @@
         <div class="se-start">
             <span class="oi oi-data-transfer-upload se-start-icon" aria-hidden="true"></span>
             <h4>Open a SCORM course to edit it</h4>
-            <p class="text-muted mb-3">Choose the course .zip exported from your authoring tool, or drag it onto this page.</p>
-            <label class="btn btn-primary @(loading ? "disabled" : "")">
-                <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Choose a course .zip")
-                <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
-            </label>
-            <p class="small text-muted mt-3 mb-0">Your changes are kept only while this tab is open. Press Download course to keep them.</p>
+            <p class="text-muted mb-3">Choose the course .zip exported from your authoring tool, drag it onto this page, or open it from Azure Blob.</p>
+            <div class="d-flex flex-wrap gap-2 justify-content-center">
+                @if (localFiles)
+                {
+                    <button type="button" class="btn btn-primary" disabled="@loading" @onclick="OpenLocal">
+                        <span class="oi oi-laptop me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Choose a course .zip")
+                    </button>
+                }
+                else
+                {
+                    <label class="btn btn-primary mb-0 @(loading ? "disabled" : "")">
+                        <span class="oi oi-laptop me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Choose a course .zip")
+                        <InputFile OnChange="OpenZip" accept=".zip,application/zip" class="d-none" />
+                    </label>
+                }
+                <button type="button" class="btn btn-outline-primary" disabled="@loading" @onclick="OpenAzure">
+                    <span class="oi oi-cloud me-1" aria-hidden="true"></span>Open from Azure Blob
+                </button>
+            </div>
+            <p class="small text-muted mt-3 mb-0">Your changes are kept only while this tab is open. Press Save course to keep them.</p>
         </div>
     }
 
@@ -751,6 +787,16 @@
     }
 </div>
 
+@if (azureOpen)
+{
+    <AzureOpenDialog TimeOffset="timeOffset" MaxBytes="@(Store.Options.MaxUploadMB * 1024L * 1024)" OnClose="() => azureOpen = false" OnOpened="OpenedFromAzure" />
+}
+@if (saving && Package is not null && module is not null)
+{
+    <SaveCourseDialog Package="Package" Module="module" LocalFiles="localFiles" TimeOffset="timeOffset"
+                      OnClose="() => saving = false" OnSaved="Saved" OnDownload="DownloadFromSave" />
+}
+
 @code {
     private static readonly (string Label, int? Width)[] Widths = [("Full", null), ("Tablet", 768), ("Phone", 390)];
 
@@ -767,6 +813,7 @@
     private string[] draftPaths = [];
     private bool advanced, showTips = true, confirmStartOver, downloaded;
     private bool sideOpen = true;
+    private bool localFiles, azureOpen, saving;
     private Review? review;
     private int? frameWidth;
     private enum Tab { Preview, Code }
@@ -792,6 +839,18 @@
         timeOffset = TimeSpan.FromMinutes(int.TryParse(prefs.GetValueOrDefault("tz"), out var tz) ? tz : 0);
         showTips = prefs.GetValueOrDefault("tips") != "0";
         LoadTermPrefs(prefs.GetValueOrDefault("terms"));
+        localFiles = await module.InvokeAsync<bool>("localFilesSupported");
+        // A course picked on the Azure Blob page.
+        if (Connections.OpenRequest is { } request)
+        {
+            Connections.OpenRequest = null;
+            if ((await Connections.GetAsync()).FirstOrDefault(c => c.Id == request.ConnectionId) is { Sas: { } sas } conn)
+            {
+                await OpenFromAzure(sas, request.BlobName, conn.Name);
+                StateHasChanged();
+                return;
+            }
+        }
         // The course this tab had open before a refresh or a visit to another page of the app.
         if (Guid.TryParse(prefs.GetValueOrDefault("open"), out var openId) && Store.Get(openId) is { } kept)
         {
@@ -878,36 +937,82 @@
         }));
     }
 
-    private async Task OpenZip(InputFileChangeEventArgs e)
+    private Task OpenZip(InputFileChangeEventArgs e) =>
+        OpenCourse(e.File.Name, e.File.Size, () => Task.FromResult(e.File.OpenReadStream(maxAllowedSize: Store.Options.MaxUploadMB * 1024L * 1024)), null);
+
+    // From this computer, through the browser's file picker, which lets the course be saved back to the same file.
+    private async Task OpenLocal()
+    {
+        LocalPick? picked;
+        try { picked = await module!.InvokeAsync<LocalPick?>("pickLocalCourse"); }
+        catch (JSException) { Show("The browser didn't open the file chooser. Press the button again.", "warning"); return; }
+        if (picked is null) return;
+        await OpenCourse(picked.Name, picked.Size, async () =>
+        {
+            var stream = await module!.InvokeAsync<IJSStreamReference>("readLocal", picked.Key);
+            return await stream.OpenReadStreamAsync(Store.Options.MaxUploadMB * 1024L * 1024);
+        }, new CourseSource { LocalKey = picked.Key, FileName = picked.Name });
+    }
+
+    private sealed record LocalPick(string Key, string Name, long Size);
+
+    private Task OpenAzure() => AfterDrafts(() => { azureOpen = true; return Task.CompletedTask; });
+
+    private async Task OpenedFromAzure((string Name, byte[] Data, CourseSource Source) opened)
+    {
+        azureOpen = false;
+        await OpenCourse(opened.Name, opened.Data.Length, () => Task.FromResult<Stream>(new MemoryStream(opened.Data)), opened.Source);
+    }
+
+    private async Task OpenFromAzure(AzureSas sas, string blobName, string? connectionName)
+    {
+        loading = true;
+        Show($"Opening {Path.GetFileName(blobName)} from Azure…", "info");
+        try
+        {
+            var opened = await Blobs.DownloadAsync(AzureBlobService.Blob(sas, blobName), Store.Options.MaxUploadMB * 1024L * 1024);
+            var source = new CourseSource { Sas = sas, BlobName = blobName, ETag = opened.ETag, ConnectionName = connectionName, FileName = Path.GetFileName(blobName) };
+            await OpenCourse(source.FileName, opened.Data.Length, () => Task.FromResult<Stream>(new MemoryStream(opened.Data)), source);
+        }
+        catch (AzureBlobService.SaveException ex) { Show(ex.Message, "danger"); }
+        catch (Exception) { Show("Could not reach the storage account. Check your network and try again.", "danger"); }
+        finally { loading = false; }
+    }
+
+    private async Task OpenCourse(string name, long size, Func<Task<Stream>> read, CourseSource? source)
     {
         var maxBytes = Store.Options.MaxUploadMB * 1024L * 1024;
-        if (e.File.Size > maxBytes)
+        if (size > maxBytes)
         {
-            Show($"{e.File.Name} is {FormatSize(e.File.Size)}. The largest course the editor can open is {Store.Options.MaxUploadMB} MB.", "danger");
+            Show($"{name} is {FormatSize(size)}. The largest course the editor can open is {Store.Options.MaxUploadMB} MB.", "danger");
             return;
         }
         loading = true;
+        StateHasChanged();
         try
         {
-            await using var upload = e.File.OpenReadStream(maxAllowedSize: maxBytes);
+            await using var upload = await read();
             using var ms = new MemoryStream();
             await upload.CopyToAsync(ms);
             ms.Position = 0;
-            var package = ScormPackage.FromZip(e.File.Name, ms);
+            var package = ScormPackage.FromZip(name, ms);
+            package.Source = source;
             if (draftPaths.Length > 0)
-                Show($"Unsaved preview changes on {string.Join(", ", draftPaths)} were dropped when {e.File.Name} was opened.", "warning");
+                Show($"Unsaved preview changes on {string.Join(", ", draftPaths)} were dropped when {name} was opened.", "warning");
+            else status = null;
             if (!await OpenPackage(package)) return;
+            var from = source?.IsAzure == true ? $" from {source.Display}" : "";
             if (status is null || statusKind != "warning") Show(package.ManifestPath.Length == 0
-                ? $"Opened {e.File.Name}, but it has no imsmanifest.xml, so it is not a SCORM package yet."
-                : $"Opened {e.File.Name} ({package.Paths.Count} files).", package.ManifestPath.Length == 0 ? "warning" : "success");
+                ? $"Opened {name}{from}, but it has no imsmanifest.xml, so it is not a SCORM package yet."
+                : $"Opened {name}{from} ({package.Paths.Count} files).", package.ManifestPath.Length == 0 ? "warning" : "success");
         }
         catch (InvalidDataException)
         {
-            Show($"{e.File.Name} is not a readable .zip file.", "danger");
+            Show($"{name} is not a readable .zip file.", "danger");
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or JSException)
         {
-            Show($"Could not read {e.File.Name}: {ex.Message}", "danger");
+            Show($"Could not read {name}: {ex.Message}", "danger");
         }
         finally
         {
@@ -1033,13 +1138,24 @@
         refreshEditor = true;
     }
 
-    private Task Export() => AfterDrafts(async () =>
+    private Task OpenSave() => AfterDrafts(() => { saving = true; return Task.CompletedTask; });
+
+    private async Task DownloadFromSave()
     {
+        saving = false;
         await module!.InvokeVoidAsync("flush");
         await module!.InvokeVoidAsync("download", $"scorm-export/{Package!.Id}");
         downloaded = true;
         UpdateUnsavedFlag();
-    });
+    }
+
+    private void Saved(string message)
+    {
+        saving = false;
+        downloaded = true;
+        UpdateUnsavedFlag();
+        Show(message, "success");
+    }
 
     [JSInvokable]
     public Task OnPreviewNavigated(string path) => InvokeAsync(() => { previewPath = path; if (Package is not null) Package.LastPreviewPath = path; StateHasChanged(); });

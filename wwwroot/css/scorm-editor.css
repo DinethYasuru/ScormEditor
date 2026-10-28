@@ -528,3 +528,45 @@
 .se-fmt-colour { position: relative; margin: 0; }
 .se-fmt-colour .se-fmt-a { border-bottom: 3px solid; padding: 0 2px; line-height: 1; }
 .se-fmt-colour input[type=color] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; border: 0; padding: 0; }
+
+/* Azure Blob: the Azure Blob page, and the open and save dialogs (outside .scorm-editor). */
+.se-az-page, .se-review-backdrop {
+    --se-border: #dde2ea;
+    --se-header: #f4f6f9;
+    --se-ink: #2b3a4a;
+    --se-muted: #6c7a89;
+    --se-primary: #1b6ec2;
+    --se-select: #e3edf8;
+    --se-sunk: #eef1f5;
+}
+.se-az-page { max-width: 1300px; padding-bottom: 24px; }
+.se-az-page .se-pane { overflow: visible; }
+.se-az-note ul { line-height: 1.5; }
+.se-az-conn { padding: 10px 12px; border-bottom: 1px solid var(--se-border); }
+.se-az-conn:last-child { border-bottom: 0; }
+.se-az-conn.active { background: var(--se-select); }
+.se-az-dialog { width: min(760px, 100%); }
+.se-az-browser { border: 1px solid var(--se-border); border-radius: 6px; overflow: hidden; }
+.se-az-crumbs {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    padding: 6px 10px; background: var(--se-header); border-bottom: 1px solid var(--se-border);
+}
+.se-az-list { max-height: 320px; overflow: auto; }
+.se-az-item {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 6px 10px; border: 0; border-bottom: 1px solid var(--se-sunk);
+    background: #fff; text-align: left; font-size: .875rem; color: var(--se-ink);
+}
+.se-az-item:hover { background: var(--se-sunk); }
+.se-az-item.active { background: var(--se-select); font-weight: 600; }
+.se-az-item.old { color: var(--se-muted); }
+.se-az-item .oi { color: var(--se-primary); flex: none; }
+.se-az-item.old .oi { color: var(--se-muted); }
+.se-az-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.se-save-dest { border: 0; padding: 0; margin: 0; display: grid; gap: 6px; }
+.se-save-option {
+    display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; margin: 0;
+    border: 1px solid var(--se-border); border-radius: 6px; cursor: pointer;
+}
+.se-save-option.active { border-color: var(--se-primary); background: var(--se-select); }
+.se-save-option .form-check-input { margin-top: 3px; flex: none; }
