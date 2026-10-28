@@ -1,0 +1,21 @@
+@* When a SAS stops working. *@
+@if (Sas.Expires is { } e)
+{
+    var left = e - DateTimeOffset.UtcNow;
+    if (left <= TimeSpan.Zero)
+    {
+        <span class="badge text-bg-danger" title="Expired @e.ToString("yyyy-MM-dd HH:mm") UTC. Make a new SAS and edit this entry.">Expired</span>
+    }
+    else if (left < TimeSpan.FromDays(7))
+    {
+        <span class="badge text-bg-warning" title="Expires @e.ToString("yyyy-MM-dd HH:mm") UTC">Expires in @(left.TotalDays >= 1 ? $"{(int)left.TotalDays} days" : $"{Math.Max(1, (int)left.TotalHours)} hours")</span>
+    }
+    else
+    {
+        <span class="badge text-bg-light border" title="Expires @e.ToString("yyyy-MM-dd HH:mm") UTC">Until @e.ToString("yyyy-MM-dd")</span>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public AzureSas Sas { get; set; } = default!;
+}

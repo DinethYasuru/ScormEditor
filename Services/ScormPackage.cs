@@ -65,6 +65,9 @@ public sealed class ScormPackage
     public string? LastPreviewPath { get; set; }
     public string? LastCodePath { get; set; }
 
+    /// <summary>Where the course was opened from or last saved to, for saving it back there.</summary>
+    public CourseSource? Source { get; set; }
+
     internal void Expire() => Expired?.Invoke();
 
     public ScormPackage(string fileName, IEnumerable<KeyValuePair<string, byte[]>> files)

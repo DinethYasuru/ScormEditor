@@ -1,0 +1,113 @@
+@* Folders and course .zip files in an Azure Blob container, reached through a SAS URL. *@
+@inject AzureBlobService Blobs
+
+<div class="se-az-browser">
+    <nav class="se-az-crumbs small" aria-label="Folder">
+        <button type="button" class="btn btn-link btn-sm p-0" @onclick='() => Go("")'>@Sas.Container</button>
+        @{ var acc = ""; }
+        @foreach (var part in Path.TrimEnd('/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            acc += part + "/";
+            var to = acc;
+            <span class="text-muted">/</span>
+            <button type="button" class="btn btn-link btn-sm p-0" @onclick="() => Go(to)">@part</button>
+        }
+        <button type="button" class="btn btn-sm btn-link p-0 ms-auto" title="Load the list again" @onclick="Load">
+            <span class="oi oi-reload" aria-hidden="true"></span>
+        </button>
+    </nav>
+    <div class="se-az-list">
+        @if (loading)
+        {
+            <div class="text-muted small p-2">Loading…</div>
+        }
+        else if (error is not null)
+        {
+            <div class="alert alert-danger small m-2 py-2">@error</div>
+        }
+        else if (entries is { Count: 0 })
+        {
+            <div class="text-muted small p-2">@(PickFolder ? "This folder is empty." : "No course .zip files in this folder.")</div>
+        }
+        else if (entries is not null)
+        {
+            @foreach (var e in entries)
+            {
+                var entry = e;
+                if (entry.IsFolder)
+                {
+                    <button type="button" class="se-az-item @(entry.Name == AzureBlobService.OldFolder ? "old" : null)" @onclick="() => Go(entry.FullName)"
+                            title="@(entry.Name == AzureBlobService.OldFolder ? "Earlier versions kept when a course was replaced" : null)">
+                        <span class="oi oi-folder" aria-hidden="true"></span>
+                        <span class="se-az-name">@entry.Name</span>
+                    </button>
+                }
+                else
+                {
+                    <button type="button" class="se-az-item @(entry.FullName == Selected ? "active" : null)" @onclick="() => Pick(entry)">
+                        <span class="oi oi-file" aria-hidden="true"></span>
+                        <span class="se-az-name">@entry.Name</span>
+                        <span class="text-muted small ms-auto text-nowrap">@Size(entry.Size) · @entry.Modified?.ToOffset(TimeOffset).ToString("yyyy-MM-dd HH:mm")</span>
+                    </button>
+                }
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public AzureSas Sas { get; set; } = default!;
+    /// <summary>Folder chooser: lists every file and reports the folder shown; otherwise lists course .zip files to pick one.</summary>
+    [Parameter] public bool PickFolder { get; set; }
+    [Parameter] public string? Selected { get; set; }
+    /// <summary>The folder to show first, when not the one the SAS URL points into.</summary>
+    [Parameter] public string? StartPath { get; set; }
+    [Parameter] public TimeSpan TimeOffset { get; set; }
+    [Parameter] public EventCallback<string> OnFile { get; set; }
+    [Parameter] public EventCallback<string> OnFolder { get; set; }
+
+    public string Path { get; private set; } = "";
+    private AzureSas? shown;
+    private List<AzureBlobService.Entry>? entries;
+    private string? error;
+    private bool loading;
+    private CancellationTokenSource? cts;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Parents may hand over a new object for the same SAS on every render.
+        if (shown?.Uri == Sas.Uri) return;
+        shown = Sas;
+        await Go(StartPath ?? (Sas.IsBlob ? "" : Sas.Path));
+    }
+
+    private async Task Go(string path)
+    {
+        Path = path;
+        await OnFolder.InvokeAsync(path);
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        cts?.Cancel();
+        cts = new CancellationTokenSource();
+        var token = cts.Token;
+        loading = true;
+        error = null;
+        try
+        {
+            var list = await Blobs.ListAsync(Sas, Path, PickFolder, token);
+            if (!token.IsCancellationRequested) entries = list;
+        }
+        catch (AzureBlobService.SaveException ex) { error = ex.Message; entries = null; }
+        catch (OperationCanceledException) { return; }
+        catch (Exception) { error = "Could not reach the storage account. Check your network."; entries = null; }
+        finally { if (!token.IsCancellationRequested) loading = false; }
+    }
+
+    private Task Pick(AzureBlobService.Entry entry) => OnFile.InvokeAsync(entry.FullName);
+
+    private static string Size(long? n) => n is not { } b ? "" :
+        b < 1024 ? $"{b} B" : b < 1024 * 1024 ? $"{b / 1024.0:0.0} KB" : $"{b / 1048576.0:0.0} MB";
+}

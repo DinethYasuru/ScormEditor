@@ -1,0 +1,33 @@
+@* What a SAS URL needs to allow, shown wherever one is asked for. *@
+<div class="alert alert-info small mb-3 se-az-note" role="note">
+    <div class="d-flex align-items-start gap-2">
+        <span class="oi oi-key mt-1" aria-hidden="true"></span>
+        <div>
+            <strong>Give the SAS these permissions: Read, Create, Write and List.</strong>
+            Leave Delete off: the editor never deletes anything.
+            @if (Full)
+            {
+                <ul class="mb-2 mt-1 ps-3">
+                    @foreach (var (letter, name, use) in AzureSas.Needed)
+                    {
+                        <li><strong>@name</strong> (@letter): @use.</li>
+                    }
+                </ul>
+                <div class="mb-1">
+                    Make it for the <strong>container</strong> (not a single file), so you can browse, and so the old file can be kept in a .OLD folder.
+                    In the Azure portal: Storage account › Containers › your container › <strong>Shared access tokens</strong>, tick the four permissions,
+                    set an expiry date, Allowed protocols <strong>HTTPS only</strong>, then <strong>Generate SAS token and URL</strong> and copy the
+                    <strong>Blob SAS URL</strong>. In Azure Storage Explorer: right-click the container › <strong>Get Shared Access Signature</strong>.
+                </div>
+                <div class="mb-0">
+                    A SAS URL works for anyone who has it until it expires, so pick the shortest expiry that suits you.
+                    Read and List are enough if you only open courses here; saving needs Create and Write.
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public bool Full { get; set; }
+}

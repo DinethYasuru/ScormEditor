@@ -1,0 +1,134 @@
+@* Open a course from Azure Blob: from a saved container, or from a pasted SAS URL. *@
+@inject AzureConnections Connections
+@inject AzureBlobService Blobs
+
+<div class="se-review-backdrop">
+    <div class="se-review se-az-dialog" role="dialog" aria-modal="true" aria-labelledby="se-az-open-title">
+        <div class="se-review-head">
+            <h5 id="se-az-open-title" class="mb-0"><span class="oi oi-cloud me-2" aria-hidden="true"></span>Open a course from Azure Blob</h5>
+        </div>
+        <div class="se-review-body">
+            @if (Connections.LoadProblem is { } problem)
+            {
+                <div class="alert alert-danger small py-2">@problem</div>
+            }
+            <div class="d-flex flex-wrap gap-2 align-items-end mb-2">
+                <div class="flex-grow-1">
+                    <label class="form-label small mb-1" for="se-az-conn">Container</label>
+                    <select id="se-az-conn" class="form-select form-select-sm" value="@choice" @onchange="Choose">
+                        @if (list is { Count: > 0 })
+                        {
+                            @foreach (var c in list)
+                            {
+                                <option value="@c.Id">@c.Name</option>
+                            }
+                        }
+                        <option value="@Paste">Paste a SAS URL…</option>
+                    </select>
+                </div>
+                <a class="btn btn-sm btn-outline-secondary" href="azure">Manage containers</a>
+            </div>
+
+            @if (choice == Paste)
+            {
+                <AzurePermissionsNote />
+                <label class="form-label small mb-1" for="se-az-paste">SAS URL of a container or of one course .zip</label>
+                <input id="se-az-paste" type="password" class="form-control form-control-sm font-monospace mb-2" @bind="pasted" @bind:event="oninput"
+                       placeholder="https://account.blob.core.windows.net/container/course.zip?sp=r&se=…&sig=…" autocomplete="off" spellcheck="false" />
+                @if (PastedSas is { } ps)
+                {
+                    <SasSummary Sas="ps" />
+                }
+                else if (pasted.Trim().Length > 0)
+                {
+                    <div class="alert alert-danger small py-2">@pasteError</div>
+                }
+            }
+
+            @if (Current is { } sas)
+            {
+                @if (sas.IsBlob)
+                {
+                    <button type="button" class="btn btn-sm btn-primary" disabled="@busy" @onclick="() => Open(sas.Path)">
+                        <span class="oi oi-folder me-1" aria-hidden="true"></span>Open @System.IO.Path.GetFileName(sas.Path)
+                    </button>
+                }
+                else
+                {
+                    <AzureBrowser Sas="sas" OnFile="Open" TimeOffset="TimeOffset" />
+                }
+            }
+            else if (list is { Count: 0 } && choice != Paste)
+            {
+                <p class="small text-muted">No containers saved yet.</p>
+            }
+
+            @if (error is not null)
+            {
+                <div class="alert alert-danger small py-2 mt-2 mb-0">@error</div>
+            }
+        </div>
+        <div class="se-review-foot">
+            @if (busy)
+            {
+                <span class="small text-muted me-auto">Opening @opening…</span>
+            }
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="OnClose">Cancel</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private const string Paste = "paste";
+
+    [Parameter] public TimeSpan TimeOffset { get; set; }
+    [Parameter] public long MaxBytes { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<(string Name, byte[] Data, CourseSource Source)> OnOpened { get; set; }
+
+    private IReadOnlyList<AzureConnection>? list;
+    private string choice = Paste, pasted = "";
+    private string? pasteError, error, opening;
+    private bool busy;
+
+    private AzureSas? PastedSas => pasted.Trim().Length == 0 ? null : AzureSas.TryParse(pasted, out pasteError);
+    private AzureConnection? Chosen => list?.FirstOrDefault(c => c.Id == choice);
+    private AzureSas? Current => choice == Paste ? PastedSas : Chosen?.Sas;
+
+    protected override async Task OnInitializedAsync()
+    {
+        list = await Connections.GetAsync();
+        if (list.Count > 0) choice = list[0].Id;
+    }
+
+    private void Choose(ChangeEventArgs e)
+    {
+        choice = e.Value?.ToString() ?? Paste;
+        error = null;
+    }
+
+    private async Task Open(string blobName)
+    {
+        if (Current is not { } sas || busy) return;
+        busy = true;
+        error = null;
+        opening = System.IO.Path.GetFileName(blobName);
+        StateHasChanged();
+        try
+        {
+            var opened = await Blobs.DownloadAsync(AzureBlobService.Blob(sas, sas.IsBlob ? null : blobName), MaxBytes);
+            var source = new CourseSource
+            {
+                Sas = sas,
+                BlobName = blobName,
+                ETag = opened.ETag,
+                FileName = System.IO.Path.GetFileName(blobName),
+                ConnectionName = choice == Paste ? null : Chosen?.Name,
+            };
+            await OnOpened.InvokeAsync((source.FileName, opened.Data, source));
+        }
+        catch (AzureBlobService.SaveException ex) { error = ex.Message; }
+        catch (Exception) { error = "Could not reach the storage account. Check your network and try again."; }
+        finally { busy = false; }
+    }
+}

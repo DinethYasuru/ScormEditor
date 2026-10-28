@@ -1678,3 +1678,141 @@ function renderLms() {
     }));
     lmsEls.log.scrollTop = lmsEls.log.scrollHeight;
 }
+
+/* ---------- files on this computer (File System Access API, Chrome and Edge) ---------- */
+
+// Handles to files and folders the user picked, by key. They can't be sent to the server, and are
+// lost when the page reloads.
+const handles = new Map();
+let handleSeq = 0;
+const keep = h => { const key = "h" + (++handleSeq); handles.set(key, h); return key; };
+const ZIP_TYPES = [{ description: "SCORM course", accept: { "application/zip": [".zip"] } }];
+
+export function localFilesSupported() {
+    return typeof window.showOpenFilePicker === "function" && typeof window.showDirectoryPicker === "function";
+}
+
+export function hasHandle(key) { return !!key && handles.has(key); }
+
+// Asks for a course .zip. Returns { key, name, size }, or null if the user cancelled.
+export async function pickLocalCourse() {
+    try {
+        const [h] = await window.showOpenFilePicker({ id: "scorm-course", types: ZIP_TYPES, multiple: false });
+        const file = await h.getFile();
+        return { key: keep(h), name: file.name, size: file.size };
+    } catch (e) {
+        if (e.name === "AbortError") return null;
+        throw e;
+    }
+}
+
+// Blazor streams the returned file to the server (the .NET side asks for an IJSStreamReference).
+export async function readLocal(key) {
+    return await handles.get(key).getFile();
+}
+
+// Asks for a folder to save into. Returns { key, name }, or null if the user cancelled.
+export async function pickFolder() {
+    try {
+        const h = await window.showDirectoryPicker({ id: "scorm-save", mode: "readwrite" });
+        return { key: keep(h), name: h.name };
+    } catch (e) {
+        if (e.name === "AbortError") return null;
+        throw e;
+    }
+}
+
+async function tryFile(dir, name) {
+    try { return await dir.getFileHandle(name); }
+    catch (e) { if (e.name === "NotFoundError" || e.name === "TypeMismatchError") return null; throw e; }
+}
+
+export async function localExists(dirKey, name) {
+    return !!(await tryFile(handles.get(dirKey), name));
+}
+
+async function sha256(blob) {
+    return new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())).join(",");
+}
+
+async function writeFile(handle, blob) {
+    const w = await handle.createWritable();
+    try {
+        await w.write(blob);
+    } catch (e) {
+        // Nothing reaches the file until close(), so aborting leaves it as it was.
+        try { await w.abort(); } catch { }
+        throw e;
+    }
+    await w.close();
+}
+
+async function writable(handle) {
+    if (!handle.queryPermission) return true;
+    if (await handle.queryPermission({ mode: "readwrite" }) === "granted") return true;
+    return await handle.requestPermission({ mode: "readwrite" }) === "granted";
+}
+
+// Saves the course from url to a file on this computer, keeping the file already there safe.
+//   target: { fileKey } the file the course was opened from, or { dirKey, name } a file in a picked folder.
+//   preserve: copy the file already there into a .OLD folder next to it first, check the copy, then replace it.
+// When the course goes back to the file it came from and a copy is wanted, the user is asked for
+// the folder that holds it (browsers only give access to the file itself).
+// Returns { ok, replaced, backup, fileKey, name } or { ok: false, error, cancelled, exists }.
+//   allowReplace: false when the user was told nothing is there; returns { ok: false, exists: true } if a file is.
+export async function saveLocal(url, target, preserve, stamp, allowReplace) {
+    let dir = target.dirKey ? handles.get(target.dirKey) : null;
+    let file = target.fileKey ? handles.get(target.fileKey) : null;
+    const name = file ? file.name : target.name;
+    try {
+        if (target.fileKey && !file) return { ok: false, error: "The browser no longer has access to that file (the page was reloaded). Choose a folder to save into." };
+        if (target.dirKey && !dir) return { ok: false, error: "The browser no longer has access to that folder. Choose it again." };
+        if (file && preserve && !dir) {
+            try {
+                dir = await window.showDirectoryPicker({ id: "scorm-save", mode: "readwrite", startIn: file });
+            } catch (e) {
+                if (e.name === "AbortError") return { ok: false, cancelled: true, error: `Not saved. To keep the old file, choose the folder that holds ${name}.` };
+                throw e;
+            }
+            const inDir = await tryFile(dir, name);
+            if (!inDir || !(await inDir.isSameEntry(file)))
+                return { ok: false, error: `That folder doesn't hold ${name}. Nothing was saved. Save again and choose the folder ${name} is in.` };
+        }
+        if (dir && !(await writable(dir))) return { ok: false, error: "The browser wasn't allowed to save in that folder. Nothing was saved." };
+        if (!file) file = await tryFile(dir, name);
+        const existed = !!file;
+        if (existed && !allowReplace) return { ok: false, exists: true, error: `${name} is already there.` };
+        if (file && !(await writable(file))) return { ok: false, error: `The browser wasn't allowed to change ${name}. Nothing was saved.` };
+
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) return { ok: false, error: "The course could not be prepared for saving. Is it still open?" };
+        const data = await res.blob();
+
+        let backup = null;
+        if (existed && preserve) {
+            const old = await file.getFile();
+            const oldHash = await sha256(old);
+            const oldDir = await dir.getDirectoryHandle(".OLD", { create: true });
+            const dot = name.lastIndexOf(".");
+            const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
+            let n = 1, bname;
+            do { bname = `${stem}_${stamp}${n > 1 ? "_" + n : ""}${ext}`; n++; } while (await tryFile(oldDir, bname));
+            const bh = await oldDir.getFileHandle(bname, { create: true });
+            await writeFile(bh, old);
+            // Read the copy back before touching the original.
+            if (await sha256(await bh.getFile()) !== oldHash)
+                return { ok: false, error: `The copy in .OLD doesn't match ${name}, so it was not replaced. Try again.` };
+            backup = ".OLD/" + bname;
+        }
+
+        if (!file) file = await dir.getFileHandle(name, { create: true });
+        await writeFile(file, data);
+        if (await sha256(await file.getFile()) !== await sha256(data))
+            return { ok: false, error: `${name} on disk doesn't match the course. Save again${backup ? "; the old file is kept as " + backup : ""}.` };
+        return { ok: true, replaced: existed, backup, fileKey: keep(file), name };
+    } catch (e) {
+        if (e.name === "SecurityError" || e.name === "NotAllowedError")
+            return { ok: false, error: "The browser blocked access to your files. Press Save again." };
+        return { ok: false, error: `Could not save ${name}: ${e.message}` };
+    }
+}
