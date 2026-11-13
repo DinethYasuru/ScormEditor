@@ -58,7 +58,7 @@ Open packages are kept in memory (`ScormPackageStore`) and served from `/scorm-p
 
 ## Moving it into the Content Manager
 
-The full step-by-step guide, with examples of opening a course from your app, is in [docs/INTEGRATION.md](docs/INTEGRATION.md).
+The full step-by-step guide, with examples of opening a course from your app, is in [docs/SCORM-Editor-Guide.md](docs/SCORM-Editor-Guide.md) (section 8).
 
 The editor is self-contained, so it can be copied into `IfsContentPortal`:
 
