@@ -5,6 +5,8 @@
 @inject AssetVersion Assets
 @inject AzureConnections Connections
 @inject AzureBlobService Blobs
+@inject ScormEditorLauncher Launcher
+@inject NavigationManager Nav
 
 <PageTitle>SCORM Editor</PageTitle>
 
@@ -38,6 +40,12 @@
             }
         </div>
         <div class="se-actions">
+            @if (returnUrl is not null)
+            {
+                <a class="btn btn-sm btn-outline-secondary" href="@returnUrl" title="Unsaved changes stay in the editor for a while; save the course first to keep them">
+                    <span class="oi oi-arrow-left me-1" aria-hidden="true"></span>@(returnLabel ?? "Back")
+                </a>
+            }
             <div class="dropdown">
                 <button type="button" class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" disabled="@loading">
                     <span class="oi oi-folder me-1" aria-hidden="true"></span>@(loading ? "Opening…" : "Open course")
@@ -822,6 +830,11 @@
     private int version;
     private TimeSpan timeOffset;
     private readonly HashSet<string> collapsed = [];
+    private string? returnUrl, returnLabel;
+
+    /// <summary>A one-time code from <see cref="ScormEditorLauncher"/>: the course another page asked the editor to open.</summary>
+    [SupplyParameterFromQuery(Name = "open")]
+    public string? OpenCode { get; set; }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -840,6 +853,20 @@
         showTips = prefs.GetValueOrDefault("tips") != "0";
         LoadTermPrefs(prefs.GetValueOrDefault("terms"));
         localFiles = await module.InvokeAsync<bool>("localFilesSupported");
+        // A course another part of the app sent here (ScormEditorLauncher). The code is used once, so
+        // drop it from the address; a refresh then carries on with the course like any other.
+        if (OpenCode is { Length: > 0 } code)
+        {
+            Nav.NavigateTo(Nav.GetUriWithQueryParameter("open", (string?)null), replace: true);
+            if (Launcher.Take(code) is { } launch)
+            {
+                (returnUrl, returnLabel) = (launch.ReturnUrl, launch.ReturnLabel);
+                await OpenFromAzure(launch.Sas, launch.BlobName, launch.SourceName);
+                StateHasChanged();
+                return;
+            }
+            Show("This link to open a course has expired or was already used. Go back and choose Edit again.", "warning");
+        }
         // A course picked on the Azure Blob page.
         if (Connections.OpenRequest is { } request)
         {

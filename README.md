@@ -64,9 +64,41 @@ The editor is self-contained, so it can be copied into `IfsContentPortal`:
 - `Components/Pages/ScormEditorPage.razor`
 - `wwwroot/js/scorm-editor.js`, `wwwroot/css/scorm-editor.css`, `wwwroot/lib/codemirror/`
 - `Components/Shared/` and `Components/Pages/AzureBlobPage.razor` (Azure Blob page, open and save dialogs)
-- In `Program.cs`: `builder.Services.AddSingleton<ScormPackageStore>();`, `AddSingleton<AzureBlobService>()`, `AddScoped<AzureConnections>()`, the Data Protection setup, and `app.MapScormPreview();`
+- In `Program.cs`: `builder.Services.AddSingleton<ScormPackageStore>();`, `AddSingleton<AzureBlobService>()`, `AddSingleton<ScormEditorLauncher>()`, `AddScoped<AzureConnections>()`, the Data Protection setup, and `app.MapScormPreview();`
 - The `Azure.Storage.Blobs` NuGet package
 - Add the CodeMirror `<script>`/`<link>` tags from `Components/App.razor` to your host page.
+
+### Opening a course from another page ("Edit" button)
+
+Another page of the app can send a course in Azure Blob Storage straight to the editor. Hand the
+SAS URL to `ScormEditorLauncher` on the server and go to the URL it returns. Only a one-time code
+goes in the address (`editor?open=…`), never the SAS, and it expires after 5 minutes.
+
+```razor
+@inject ScormEditorLauncher Launcher
+@inject NavigationManager Nav
+
+<button class="btn btn-sm btn-primary" @onclick="() => Edit(course)">Edit</button>
+
+@code {
+    void Edit(Course course) =>
+        Nav.NavigateTo(Launcher.EditorUrl(
+            sasUrl: containerSasUrl,        // container or folder SAS: read, add, create, write, list
+            blobName: course.BlobPath,      // e.g. "courses/intro.zip"
+            sourceName: "Content Manager",  // shown as where the course came from
+            returnUrl: "content",           // optional: adds a Back button to the editor
+            returnLabel: "Back to courses"));
+}
+```
+
+`EditorUrl` works with `NavigateTo(url, forceLoad: false)` or as a link opened in a new tab. Use
+`Create(...)` to get only the code. A SAS URL for the blob itself also works (leave out
+`blobName`); the course then saves back over the same blob, but the old version can't be copied
+to `.OLD` unless a container SAS for it is saved on the Azure Blob page. Generate the SAS on the
+server for a short time, and never send it to the browser.
+
+When the user saves, "Back where it came from" in the Save dialog writes over the same blob,
+checking it hasn't changed since it was opened.
 
 The preview endpoints have no authentication of their own (the package id is a random GUID). Put them behind the same sign-in as the rest of the portal before deploying.
 

@@ -9,6 +9,7 @@ builder.Services.AddSingleton<AssetVersion>();
 builder.Services.Configure<ScormEditorOptions>(builder.Configuration.GetSection("ScormEditor"));
 builder.Services.AddSingleton<ScormPackageStore>();
 builder.Services.AddSingleton<AzureBlobService>();
+builder.Services.AddSingleton<ScormEditorLauncher>();
 builder.Services.AddScoped<AzureConnections>();
 
 // Saved Azure SAS URLs are encrypted with these keys before they are stored in the user's browser.
