@@ -93,12 +93,12 @@ goes in the address (`editor?open=…`), never the SAS, and it expires after 5 m
 
 `EditorUrl` works with `NavigateTo(url, forceLoad: false)` or as a link opened in a new tab. Use
 `Create(...)` to get only the code. A SAS URL for the blob itself also works (leave out
-`blobName`); the course then saves back over the same blob, but the old version can't be copied
-to `.OLD` unless a container SAS for it is saved on the Azure Blob page. Generate the SAS on the
-server for a short time, and never send it to the browser.
+`blobName`). Generate the SAS on the server for a short time, and never send it to the browser;
+it needs read and write.
 
-When the user saves, "Back where it came from" in the Save dialog writes over the same blob,
-checking it hasn't changed since it was opened.
+A course opened this way is only ever saved over its own blob: Save course replaces that file,
+with no `.OLD` copy and no choice of another place (Download is still offered). The save stops if
+someone else changed the blob after it was opened, and the user can then choose Replace anyway.
 
 The preview endpoints have no authentication of their own (the package id is a random GUID). Put them behind the same sign-in as the rest of the portal before deploying.
 
