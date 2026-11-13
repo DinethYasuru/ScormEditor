@@ -8,6 +8,9 @@ Blazor app and open courses in it from there.
 Bootstrap 5.3, open-iconic, CodeMirror 5, Azure.Storage.Blobs 12.30.1 · **Theme:** IFS Academy
 Content Manager.
 
+> **AI agents:** for the merge into another app, follow [`LLM-MERGE-PLAYBOOK.md`](LLM-MERGE-PLAYBOOK.md)
+> (exact steps, invariants and checks). This guide is the reference it cites.
+
 ## Contents
 
 1. [What it is](#1-what-it-is)
