@@ -174,7 +174,7 @@
 
     private AzureConnection? Conn => connections?.FirstOrDefault(c => c.Id == connId);
     private bool ReplaceOnly => Package.Source?.ReplaceOnly == true;
-    private bool SourceUsable => Package.Source is { } s && (s.IsAzure || sourceHandle);
+    private bool SourceUsable => Package.Source is { } s && (s.IsAzure || s.HostSave is not null || sourceHandle);
     private string BackupExample => $"{Path.GetFileNameWithoutExtension(fileName)}_{AzureBlobService.Stamp(DateTimeOffset.UtcNow, TimeOffset)}{Path.GetExtension(fileName)}";
 
     private bool CanSave => dest switch
@@ -292,7 +292,8 @@
         var stamp = AzureBlobService.Stamp(DateTimeOffset.UtcNow, TimeOffset);
         try
         {
-            if (dest == Dest.Source && Package.Source is { IsAzure: true } src) await SaveAzure(src.Sas!, src.BlobName!, src.ConnectionName, stamp, src.ETag);
+            if (dest == Dest.Source && Package.Source is { HostSave: { } hostSave } host) await SaveHost(host, hostSave);
+            else if (dest == Dest.Source && Package.Source is { IsAzure: true } src) await SaveAzure(src.Sas!, src.BlobName!, src.ConnectionName, stamp, src.ETag);
             else if (ReplaceOnly) return;
             else if (dest == Dest.Azure) await SaveAzure(Conn!.Sas!, folder + fileName, Conn.Name, stamp, null);
             else await SaveLocal(stamp);
@@ -325,6 +326,20 @@
             changed ? null : expected, allowReplace: exists == true, stamp);
         Package.Source = new CourseSource { Sas = sas, BlobName = blobName, ETag = result.ETag, ConnectionName = connName, FileName = Path.GetFileName(blobName), ReplaceOnly = ReplaceOnly && dest == Dest.Source };
         await OnSaved.InvokeAsync(Done(Package.Source.Display, result.Replaced, result.BackupName));
+    }
+
+    // A course another page handed over in memory: give the edited .zip back to that page's code.
+    private async Task SaveHost(CourseSource source, Func<byte[], Task> save)
+    {
+        progress = "Preparing the course…";
+        StateHasChanged();
+        await Module.InvokeVoidAsync("flush");
+        var data = Package.ToZip();
+        progress = "Saving…";
+        StateHasChanged();
+        try { await save(data); }
+        catch (Exception ex) { throw new AzureBlobService.SaveException($"The course was not saved: {ex.Message}"); }
+        await OnSaved.InvokeAsync(Done(source.Display, true, null));
     }
 
     private async Task SaveLocal(string stamp)

@@ -100,6 +100,30 @@ A course opened this way is only ever saved over its own blob: Save course repla
 with no `.OLD` copy and no choice of another place (Download is still offered). The save stops if
 someone else changed the blob after it was opened, and the user can then choose Replace anyway.
 
+### Sending the course itself (zip bytes)
+
+If the other page already has the course .zip, hand it over with a save function instead of a
+blob location. The editor calls that function with the whole edited .zip when the user saves;
+your code decides where it goes.
+
+```razor
+async Task Edit(Course c)
+{
+    byte[] zip = await LoadCourseZip(c);
+    Nav.NavigateTo(Launcher.EditorUrl(
+        zip, fileName: c.FileName,
+        onSave: async edited => await StoreCourseZip(c, edited),
+        sourceName: "Content Manager",
+        returnUrl: "content", returnLabel: "Back to courses"));
+}
+```
+
+The Save dialog then offers only "Back where it came from" (which calls `onSave`) and Download.
+If `onSave` throws, the user sees its message and nothing is marked as saved. `onSave` runs on
+the server in the editor's circuit, so the page that called `EditorUrl` can be gone by then: it
+must not use that page's components or scoped services. Checking whether someone else changed
+the course in the meantime is up to your code.
+
 The preview endpoints have no authentication of their own (the package id is a random GUID). Put them behind the same sign-in as the rest of the portal before deploying.
 
 ## Theme
