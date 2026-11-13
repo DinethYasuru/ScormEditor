@@ -15,8 +15,8 @@ Content Manager.
 3. [Using the editor](#3-using-the-editor)
 4. [Opening and saving courses (computer and Azure Blob)](#4-opening-and-saving-courses-computer-and-azure-blob)
 5. [Configuration and server limits](#5-configuration-and-server-limits)
-6. [How it works inside](#6-how-it-works-inside)
-7. [Code map (every file)](#7-code-map-every-file)
+6. [How it works: the flows step by step](#6-how-it-works-the-flows-step-by-step)
+7. [The files, one by one](#7-the-files-one-by-one)
 8. [Putting it into another Blazor app, and opening courses from it](#8-putting-it-into-another-blazor-app-and-opening-courses-from-it)
 9. [Security](#9-security)
 10. [Troubleshooting](#10-troubleshooting)
@@ -40,6 +40,7 @@ Pages of the app:
 | `/editor` | **The SCORM editor** (`ScormEditorPage.razor`) |
 | `/azure` | Azure Blob: saved containers (SAS URLs), browse and open courses |
 | `/scorm-preview/{id}/{path}` | Not a page: serves an open course's files to the preview (GET) and takes Code-tab writes (PUT) |
+| `/scorm-export/{id}` | Not a page: the edited course as a .zip (Download and saving to this computer) |
 
 ## 2. Running it
 
@@ -276,100 +277,303 @@ so a failed save leaves the old file as it was. A dragged-in course has no file 
 (`AddHubOptions(o => o.MaximumReceiveMessageSize = 64 * 1024 * 1024)`), because edited pages go to
 the server for review over the Blazor connection.
 
-## 6. How it works inside
+## 6. How it works: the flows step by step
+
+Each flow below is written as **who does what, in which file and method**. "Page" means
+`Components/Pages/ScormEditorPage.razor` (its `@code` block runs on the server); "JS" means
+`wwwroot/js/scorm-editor.js` (runs in the browser); "store" means the singleton
+`ScormPackageStore`.
 
 ### 6.1 The big picture
 
 ```
-Browser                                         Server (Blazor Server app)
-┌──────────────────────────────┐               ┌─────────────────────────────────────────┐
-│ ScormEditorPage (Blazor UI)  │◄── SignalR ──►│ ScormEditorPage.razor (C#)              │
-│  scorm-editor.js (JS module) │               │   ScormPackageStore ── ScormPackage      │
-│   CodeMirror, edit mode,     │               │   EditMapper / DraftPatcher / TextDiff   │
-│   LMS stub (window.API)      │               │   AzureBlobService ── Azure Blob Storage │
-│  ┌────────────────────────┐  │  GET / PUT    │   ScormEditorLauncher (hand-off codes)   │
-│  │ preview <iframe>       │──┼──────────────►│ /scorm-preview/{id}/{path}               │
-│  │ the course, same origin│  │               │   (ScormPreviewEndpoints)                │
-│  └────────────────────────┘  │               └─────────────────────────────────────────┘
-└──────────────────────────────┘
+ BROWSER                                              SERVER (one ASP.NET Core process)
+┌──────────────────────────────────────┐            ┌──────────────────────────────────────────────┐
+│ /editor page (Blazor UI, HTML)       │  SignalR   │ ScormEditorPage.razor  (C#, one per tab)      │
+│                                      │◄──────────►│   ├─ ScormPackageStore (singleton)            │
+│ scorm-editor.js  (JS module)         │  (Blazor   │   │    └─ ScormPackage (one per open course)  │
+│   CodeMirror (Code tab)              │  circuit)  │   ├─ EditMapper / DraftPatcher / TextDiff     │
+│   Edit mode, toolbar, right-click    │            │   ├─ AzureBlobService ───────► Azure Blob     │
+│   drafts, word-check highlights      │            │   ├─ AzureConnections (saved SAS, encrypted)  │
+│   LMS stub: window.API / API_1484_11 │            │   └─ ScormEditorLauncher (hand-off codes)     │
+│  ┌────────────────────────────────┐  │  HTTP      │                                              │
+│  │ preview <iframe>: the course   │──┼──GET──────►│ ScormPreviewEndpoints                        │
+│  │ loaded from /scorm-preview/... │  │  PUT ─────►│   GET  /scorm-preview/{id}/{**path}          │
+│  └────────────────────────────────┘  │  GET ─────►│   PUT  /scorm-preview/{id}/{**path}          │
+│                                      │            │   GET  /scorm-export/{id}   (the .zip)        │
+└──────────────────────────────────────┘            └──────────────────────────────────────────────┘
 ```
 
-### 6.2 Courses live in memory
+Two channels connect browser and server:
 
-Opening a course reads the .zip into a `ScormPackage`: a dictionary of package-relative paths to
-bytes, plus the original bytes of every changed file, an undo stack, a change log and the parsed
-manifest. `ScormPackageStore` (singleton) holds open packages by a random GUID, enforces
-`MaxOpenCourses`, closes idle ones, and keeps a closed tab's course for `ReopenMinutes`
-(Attach/Release). Nothing is written to the server's disk. The course's `CourseSource` records
-where it came from (blob + SAS + ETag, local file handle key, or the launching app's save
-function) and stays on the server.
+- **The Blazor circuit (SignalR):** every button click, every call from C# to JS
+  (`module.InvokeVoidAsync("…")`) and from JS back to C# (`dotnet.invokeMethodAsync("On…")`).
+- **Plain HTTP:** the preview iframe loads course files with `GET`, the Code tab and image swaps
+  write files with `PUT`, and Download fetches the zip. Large data goes this way so it isn't
+  limited by SignalR's message size.
 
-### 6.3 The preview
+Everything about an open course lives in **server memory** in a `ScormPackage`, found by its id
+(a random GUID). Nothing is written to the server's disk.
 
-The preview iframe loads `/scorm-preview/{id}/{launch page}`. `ScormPreviewEndpoints` serves each
-file from memory with the right content type and `no-store`. Because the course loads from real
-relative URLs on the **same origin** as the editor, it finds the stub LMS API through
-`window.parent` and Storyline/Rise packages that fetch their own data files work as they would on
-an LMS. Code-tab edits and image swaps are written with `PUT` to the same URL (so large files
-don't go over SignalR); text arrives as UTF-8 and is stored in the file's own encoding.
+### 6.2 Starting the editor page
 
-### 6.4 From a preview edit to a saved file
+1. The browser opens `/editor`. Blazor renders `ScormEditorPage` interactively.
+2. **Page `OnAfterRenderAsync(firstRender)`** imports the JS module
+   (`import("./js/scorm-editor.js?v=…")`, the `?v=` from `AssetVersion.Url`) and calls
+   **JS `init(dotnetRef, frame, editorHost, lmsHost)`**: sets up CodeMirror, the preview iframe's
+   load handler, keyboard shortcuts (Ctrl+S), drag-and-drop, the "leave page?" warning and the
+   LMS stub.
+3. **JS `getPrefs()`** returns the browser's saved preferences (Advanced, tips, word list, time
+   zone) and the id of the course this tab had open (`sessionStorage`).
+4. The page decides what to open, in this order:
+   1. `?open=<code>` in the address → **launcher hand-off** (6.5);
+   2. `AzureConnections.OpenRequest` set → a course chosen on the **Azure Blob page** (6.4);
+   3. a course id from `sessionStorage` that the store still has → **carry on** after a refresh
+      (`OpenPackage(kept, reopened: true)`);
+   4. otherwise the empty editor with **Open course**.
 
-1. In Edit mode, `scorm-editor.js` makes the page editable and records, for each element you edit,
-   its HTML and text just before the first edit.
-2. **Review and save** sends the drafts (before/after per element) to the server.
-3. `EditMapper` finds where each change lives (page HTML, script/JSON data, Rise base64 data) and
-   builds the new file contents; `DraftPatcher` patches static HTML in place; `TextDiff` (Myers
-   line diff) makes the review.
-4. The ticked changes are written in one `ScormPackage.Step` (one Undo step, one change-log entry),
-   and the preview reloads.
+### 6.3 Opening a course from this computer
 
-### 6.5 Saving to Azure
+1. The user picks a .zip (**Open course → From this computer**) or drops it on the page.
+   - Chrome/Edge: **JS `pickLocalCourse()`** uses the File System Access API and keeps the file
+     handle in the browser (so it can be saved back later); **JS `readLocal(key)`** streams the
+     bytes.
+   - Other browsers / drag and drop: Blazor's `InputFile` → **Page `OpenZip`**.
+2. **Page `OpenCourse(name, size, read, source)`** checks `MaxUploadMB`, reads the stream into
+   memory and calls **`ScormPackage.FromZip`**, which unzips every entry into a dictionary
+   (normalised paths) and parses `imsmanifest.xml` with **`ScormManifest.Parse`** (version,
+   organization tree, launch page). `package.Source` is set to a `CourseSource` (`LocalKey` = the
+   browser file handle).
+3. **Page `OpenPackage(package)`**:
+   - **`store.TryAdd`** registers it (refused if `MaxOpenCourses` is reached), **`store.Attach`**
+     counts this tab as a viewer;
+   - **JS `setPackage(id)`** sets the preview base URL to `/scorm-preview/{id}`;
+   - **JS `setSession("open", id)`** remembers it for a refresh;
+   - opens the launch page in the Code tab (**`OpenFile`** → **JS `openText`**) and in the
+     preview (**`SetPreview`** → **JS `loadPreview(path)`**, see 6.6).
 
-`SaveCourseDialog` builds the zip (`ScormPackage.ToZip`) and calls `AzureBlobService.SaveAsync`:
-optional `.OLD` copy (copied, read back, compared), then an upload conditional on the ETag, then a
-size/MD5 check. The new ETag is kept so the next save checks against it.
+### 6.4 Opening a course from Azure Blob
 
-### 6.6 Browser-side state
+1. **Open course → From Azure Blob** shows **`AzureOpenDialog`**: pick a saved container
+   (`AzureConnections.GetAsync`, decrypted on the server) and browse it with **`AzureBrowser`**
+   (`AzureBlobService.ListAsync`), or paste a SAS URL (`AzureSas.TryParse` checks it).
+2. **`AzureBlobService.DownloadAsync(blob, maxBytes)`** downloads the .zip and returns the bytes and
+   the blob's **ETag**.
+3. **Page `OpenedFromAzure`** / **`OpenFromAzure`** → **`OpenCourse`** with a `CourseSource`
+   holding `Sas`, `BlobName`, `ETag` and the container name. Then as 6.3 step 3.
+4. From the **Azure Blob page** (`AzureBlobPage.razor`), **Open in editor** sets
+   `AzureConnections.OpenRequest = (connectionId, blobName)` and navigates to `editor`; the editor
+   picks it up in 6.2 step 4.
 
-`localStorage`: Advanced on/off, tips shown, word list, saved Azure containers (encrypted).
-`sessionStorage`: the id of the course this tab has open (for carrying on after a refresh).
+### 6.5 Opening a course sent by another app (launcher)
 
-## 7. Code map (every file)
+```
+Other page (Edit button)            ScormEditorLauncher (singleton)         ScormEditorPage
+────────────────────────            ───────────────────────────────         ───────────────
+EditorUrl(sas, blob, …)    ──────►  parse SAS, make random code,
+  or EditorUrl(zip, name, onSave)   keep Request for 5 min
+                           ◄──────  "editor?open=<code>"
+Nav.NavigateTo(url)        ─────────────────────────────────────────────►  OnAfterRenderAsync:
+                                                                            remove ?open from address
+                                    Take(code) (once only)   ◄──────────── 
+                                    ─────────────────────────────────────►  Azure: OpenFromAzure(...)
+                                                                            Bytes: OpenCourse(...) with
+                                                                              CourseSource.HostSave = onSave
+                                                                            ReplaceOnly = true, Back button
+```
 
-| File | What it does |
+1. Your page calls **`ScormEditorLauncher.EditorUrl(...)`** on the server. For Azure it parses the
+   SAS (`AzureSas.TryParse`) and works out the blob name; for bytes it keeps the zip, file name and
+   `onSave`. It stores a `Request` under a random 32-character code for 5 minutes and returns
+   `editor?open=<code>`.
+2. Your page navigates there. The editor reads the code (`[SupplyParameterFromQuery] open`),
+   removes it from the address (so a refresh doesn't reuse it), and **`Launcher.Take(code)`**
+   returns the request once (null if unknown, used or expired → warning message).
+3. Azure → **`OpenFromAzure(..., replaceOnly: true)`** (6.4 step 2-3).
+   Bytes → **`OpenCourse`** with `CourseSource { HostSave = onSave, HostName, ReplaceOnly = true }`.
+4. `returnUrl`/`returnLabel` show the **Back** button in the toolbar.
+
+### 6.6 Showing the preview
+
+1. **JS `loadPreview(path)`** sets the iframe to `/scorm-preview/{id}/{path}`.
+2. **`ScormPreviewEndpoints` GET** finds the package in the store (`store.Get(id)`), resolves the
+   path (`ScormPackage.Resolve`, case-insensitive fallback) and returns the bytes with the right
+   content type and `Cache-Control: no-store`.
+3. The course's own HTML, scripts, images and data files load the same way, by relative URL, as
+   they would from an LMS. Because the iframe is on the **same origin** as the editor, the course
+   finds `window.parent.API` (SCORM 1.2) or `API_1484_11` (2004): the **LMS stub** in JS, which
+   answers every call and writes it to the LMS panel.
+4. When the frame loads, **JS `onFrameLoad`** turns on Edit mode inside it (and inside its
+   same-origin inner frames), tells the page which file is showing
+   (**`OnPreviewNavigated`**), and re-applies word-check highlights.
+
+### 6.7 Editing in the preview → Review → Save (the main flow)
+
+```
+ user types / formats / right-click edits in the iframe
+        │
+        ▼
+ JS records each edited element: HTML + text BEFORE the first edit, and NOW   (drafts, in browser)
+        │  JS → OnDraftsChanged(paths)  (shows "Review and save")
+        ▼
+ user presses Review and save (or Ctrl+S → OnReviewRequested)
+        │
+        ▼
+ Page ReviewDrafts → JS getDrafts() returns EditMapper.Edit[]  ──SignalR──►  server
+        │
+        ▼
+ EditMapper.Apply(package, edits)  for each edit, find where it lives:
+        1. the page's own HTML        → DraftPatcher patches the changed characters in place
+        2. elsewhere in the package    → JS/JSON data (Storyline), base64 course data (Rise)
+        3. not found                   → listed as a problem, nothing written
+        │  returns FileChange[] (old/new text) + Problem[]
+        ▼
+ TextDiff.Compare(old, new) per file  → the review dialog (diff + tick box per change)
+        │
+        ▼  user presses Save changes
+ Page SaveDrafts → ScormPackage.Step(label, paths, write)   (one Undo step + change-log line)
+        │          → WriteText for each file (in its own encoding, TextEncoding)
+        ▼
+ JS updateDoc (Code tab), JS clearDrafts(reload) → preview reloads from the saved files
+```
+
+Why it works this way: saving the **rendered** page would also save everything the course's
+scripts added at run time. Sending only *before/after per element* and finding that text in the
+source files means only your change is written.
+
+The same machinery serves **Find and replace** (`EditMapper.FindReplace` → review → `Step`) and
+the **ARR Word Check** (`EditMapper.ScanTerms` runs on a background thread over every file; JS
+`setTerms`/`termsShow` highlight matches in the preview; nothing is written).
+
+### 6.8 Editing in the Code tab
+
+1. **Page `OpenFile(path)`** reads the text (`ScormPackage.ReadText`, decoded from the file's own
+   encoding) and calls **JS `openText(path, text, mode)`**, which shows it in CodeMirror.
+2. As you type, **JS `queueSave`** waits 600 ms, then **`putFile`** sends `PUT
+   /scorm-preview/{id}/{path}` with the text.
+3. **`ScormPreviewEndpoints` PUT** re-encodes the text into the file's encoding
+   (`package.EncodeText`), writes it (`package.Write`) and logs "Edited in the Code tab".
+   An image swap from the right-click menu sends the header `X-Scorm-Editor-Step`, which makes it
+   one Undo step instead.
+4. `ScormPackage` raises **`Changed`** → **Page `OnPackageChanged`** refreshes the badge and file
+   tree; with **Live** on, JS reloads the preview.
+
+### 6.9 Undo
+
+Every save of drafts, find-and-replace, image swap and file operation goes through
+**`ScormPackage.Step(label, paths, write, log)`**, which first stores the current bytes of those
+paths. **Page `UndoLast`** → **`ScormPackage.Undo()`** puts them back (refused if a file was changed
+again in the Code tab since), then **`SyncEditors`** reloads those files in CodeMirror and the
+preview. **Start over** → `ScormPackage.Revert` for every changed file.
+
+### 6.10 Saving (Save course)
+
+1. **Page `OpenSave`** (after drafts are saved or discarded) shows **`SaveCourseDialog`**, which
+   picks the default destination from `Package.Source`.
+2. **JS `flush()`** first pushes any Code-tab text not yet sent.
+3. **`ScormPackage.ToZip()`** builds the .zip: `imsmanifest.xml` first, every file, and
+   `scorm-editor-changes.txt` (the change log).
+4. Then, by destination:
+
+| Destination | What runs |
 |---|---|
-| `Program.cs` | Services, Data Protection, SignalR limit, `MapScormPreview()`, Razor components |
-| `appsettings.json` | `ScormEditor` limits (section 5) |
-| `Components/App.razor` | HTML shell: Bootstrap, open-iconic, CodeMirror, editor CSS/JS, `blazor.web.js`; Interactive Server for all routes |
-| `Components/Routes.razor`, `Layout/MainLayout.razor`, `Layout/NavMenu.razor` | Router and the Content Manager-style layout and left menu |
-| `Components/Pages/Home.razor` | `/`, introduction |
-| `Components/Pages/ScormEditorPage.razor` | `/editor`: the whole editor UI and its C# logic (open, preview, code, review, find/replace, word check, undo, save, launcher hand-off) |
-| `Components/Pages/AzureBlobPage.razor` | `/azure`: saved containers, test, browse, open in editor |
-| `Components/Pages/Error.razor` | Error page |
-| `Components/Shared/SaveCourseDialog.razor` | Save course dialog: destinations, .OLD, ETag check, host save |
-| `Components/Shared/AzureOpenDialog.razor` | Open from Azure: saved container or pasted SAS |
-| `Components/Shared/AzureBrowser.razor` | Folder/file browser for a container |
-| `Components/Shared/SasSummary.razor`, `ExpiryBadge.razor`, `AzurePermissionsNote.razor` | Show what a SAS points at, its permissions and expiry |
-| `Services/ScormPackage.cs` | One open course in memory: files, originals, undo steps, change log, zip in/out, manifest sync |
-| `Services/ScormPackageStore.cs` | Open courses by id, limits, idle clean-up; `ScormEditorOptions` |
-| `Services/ScormManifest.cs` | Reads `imsmanifest.xml`: version, organization tree, launch page |
-| `Services/ScormPreviewEndpoints.cs` | `GET`/`PUT /scorm-preview/{id}/{**path}` |
-| `Services/EditMapper.cs` | Preview edits → file changes; find/replace; word-check scanning; Rise/Storyline data |
-| `Services/DraftPatcher.cs` | Patches an edit into a page's HTML in place |
-| `Services/TextDiff.cs` | Line diff with word highlights for the review |
-| `Services/TextEncoding.cs` | Reads/writes text files in their own encoding |
-| `Services/TermList.cs` | ARR Word Check list and its default IFS Academy pairs |
-| `Services/CourseSource.cs` | Where a course came from and how to save it back |
-| `Services/AzureSas.cs` | Parses a SAS URL: account, container, path, blob or container, permissions, expiry |
-| `Services/AzureBlobService.cs` | List, test, download and save blobs (ETag, .OLD, MD5 check); never deletes |
-| `Services/AzureConnections.cs` | The user's saved containers, encrypted in the browser |
-| `Services/ScormEditorLauncher.cs` | Hand-off from another page: one-time codes for a blob or zip bytes |
-| `Services/AssetVersion.cs` | `?v=` cache-busting for the editor's JS/CSS |
-| `wwwroot/js/scorm-editor.js` | JS module: CodeMirror, edit mode, toolbar, right-click menu, drafts, LMS stub, word-check highlights, local file saving |
-| `wwwroot/css/scorm-editor.css` | Editor styles |
-| `wwwroot/lib/codemirror/` | CodeMirror 5 core, xml/javascript/css/htmlmixed modes, 3 addons |
-| `docs/` | This guide |
+| Back to Azure / to an Azure container | `SaveAzure` → **`AzureBlobService.SaveAsync`**: optional `.OLD` copy (copy, read back, compare) → upload **only if the ETag still matches** → check size and MD5 → keep the new ETag in `Package.Source` |
+| Back to the app that sent it | `SaveHost` → your **`onSave(zip)`**; an exception becomes "The course was not saved: …" |
+| This computer (same file or a folder) | `SaveLocal` → **JS `saveLocal(url, target, …)`**, which fetches `GET /scorm-export/{id}` and writes it with the File System Access API (temporary file, then swap; optional `.OLD`) |
+| Download | **Page `DownloadFromSave`** → **JS `download("scorm-export/{id}")`** |
+
+5. **Page `Saved(message)`** clears the "unsaved" warning and shows the result.
+
+For launcher courses (`ReplaceOnly`), the dialog only offers **Back where it came from** and
+**Download**, with no `.OLD` copy.
+
+### 6.11 Closing, refresh and clean-up
+
+- Leaving the page or refreshing → **Page `DisposeAsync`** → **`store.Release(package)`**. The
+  package is kept for `ReopenMinutes`, so the same tab carries on (6.2 step 4.3).
+- A background timer in the store (**`Sweep`**, every minute) removes packages that were
+  released longer than `ReopenMinutes` ago or unused for `IdleHours`, and raises **`Expired`**, so
+  an idle open tab says the course was closed.
+
+### 6.12 What is kept where
+
+| Data | Where | How long |
+|---|---|---|
+| The course's files, originals, undo steps, change log | Server memory (`ScormPackage` in `ScormPackageStore`) | Until closed + `ReopenMinutes`, or `IdleHours` unused |
+| Where it came from (SAS, ETag, file handle key, `onSave`) | Server memory (`CourseSource`) | Same as the course |
+| Unsaved preview drafts | Browser (JS) | Until saved, discarded or the page reloads |
+| Launch codes | Server memory (`ScormEditorLauncher`) | 5 minutes, one use |
+| Saved Azure containers | Browser `localStorage`, encrypted by the server | Until removed |
+| Advanced, tips, word list | Browser `localStorage` | Until changed |
+| Which course this tab has open | Browser `sessionStorage` | The tab's life |
+| Local file handles (Chrome/Edge) | Browser memory | Until the page reloads |
+
+## 7. The files, one by one
+
+### 7.1 App shell
+
+| File | Purpose |
+|---|---|
+| `Program.cs` | Startup. Registers the services (`AssetVersion`, `ScormEditorOptions`, `ScormPackageStore`, `AzureBlobService`, `AzureConnections`, `ScormEditorLauncher`), Data Protection (keys folder from `ScormEditor:DataProtectionKeysPath`), Interactive Server components with a 64 MB SignalR message limit, and maps `MapScormPreview()` and the Razor components. |
+| `appsettings.json` | `ScormEditor` limits (section 5) and logging. |
+| `ScormEditor.csproj` | .NET 8 web project; one package: `Azure.Storage.Blobs`. |
+| `Properties/launchSettings.json`, `.vscode/launch.json` | Local run profiles (http://localhost:5136). |
+| `Components/App.razor` | The HTML document: Bootstrap, open-iconic, CodeMirror and editor CSS in the head; CodeMirror scripts and `blazor.web.js` at the end; `Routes` and `HeadOutlet` set to Interactive Server. |
+| `Components/Routes.razor` | Router, with `MainLayout` as the default layout. |
+| `Components/_Imports.razor` | `@using` lines shared by all components. |
+| `Components/Layout/MainLayout.razor` (+ `.css`) | Sidebar + main area, styled like the Content Manager. |
+| `Components/Layout/NavMenu.razor` (+ `.css`) | Left menu: Home, SCORM Editor, Azure Blob. |
+
+### 7.2 Pages
+
+| File | Purpose |
+|---|---|
+| `Components/Pages/ScormEditorPage.razor` | **The editor (`/editor`).** Markup for the toolbar, tips, side panel (pages / structure / file tree), Preview and Code tabs, formatting toolbar, review dialog, find and replace, word check, LMS panel, and the Save/Open dialogs. Its `@code` block holds all the editor logic: start-up and launcher hand-off (`OnAfterRenderAsync`), opening (`OpenCourse`, `OpenPackage`, `OpenFromAzure`), preview and Code tab (`SetPreview`, `OpenFile`), review and save of drafts (`ReviewDrafts`, `BuildReview`, `SaveDrafts`, `DiscardDrafts`), undo (`UndoLast`), find and replace (`RunFind`, `ApplyReplace`), word check (`ScanCourseTerms`, `ShowTerm`), file operations (add, upload, rename, delete, revert, sync manifest), and the `[JSInvokable]` callbacks the JS module calls (`OnPreviewNavigated`, `OnDraftsChanged`, `OnReviewRequested`, `OnImageReplaced`, `OnTermsOnPage`, `OnTermShown`). |
+| `Components/Pages/AzureBlobPage.razor` | **Azure Blob (`/azure`).** Add, test and remove saved containers (`AzureConnections`), browse one (`AzureBrowser`), and **Open in editor** (sets `AzureConnections.OpenRequest`). |
+| `Components/Pages/Home.razor` | `/`: introduction cards linking to the editor. |
+| `Components/Pages/Error.razor` | Error page for unhandled exceptions. |
+
+### 7.3 Shared components (used by the editor and the Azure page)
+
+| File | Purpose |
+|---|---|
+| `Components/Shared/SaveCourseDialog.razor` | **Save course.** Chooses the destination (back where it came from, Azure container + folder + name, local folder, download), checks whether the file exists, offers Keep the old file, and runs the save: `SaveAzure`, `SaveHost` (launcher `onSave`), `SaveLocal`. Handles "changed since opened" and errors. In `ReplaceOnly` mode only shows Back where it came from + Download. |
+| `Components/Shared/AzureOpenDialog.razor` | **Open from Azure.** Saved container or pasted SAS; browse and pick a .zip; downloads it and hands bytes + `CourseSource` to the editor. |
+| `Components/Shared/AzureBrowser.razor` | Folder/file list of a container (folders, .zip files, sizes, dates) for opening or choosing a save folder. |
+| `Components/Shared/SasSummary.razor` | Shows what a SAS points at (account/container/folder or blob) and its permissions. |
+| `Components/Shared/ExpiryBadge.razor` | "Expires in …" / "Expired" badge for a SAS. |
+| `Components/Shared/AzurePermissionsNote.razor` | Which SAS permissions to grant, and why Delete is never needed. |
+
+### 7.4 Services (server-side C#)
+
+| File | Purpose | Main members |
+|---|---|---|
+| `Services/ScormPackage.cs` | One open course in memory. Paths are normalised (forward slashes, no `..`). Keeps current bytes, original bytes of changed files, the undo stack, the change log, the parsed manifest, `Source`, and the last page shown (for carrying on). Thread-safe (the circuit and the preview endpoints use it at once). | `FromZip`, `ToZip`, `Read`/`ReadText`, `Write`/`WriteText`, `EncodeText`, `Resolve`, `Delete`, `Rename`, `Revert`, `Step`, `Undo`, `LogChange`, `ChangeLog`, `SyncManifestFileList`, events `Changed`, `Expired` |
+| `Services/ScormPackageStore.cs` | All open courses, by id. Enforces `MaxOpenCourses` (makes room by dropping the course closed longest ago), counts viewers, keeps closed courses for `ReopenMinutes`, sweeps idle ones. Also defines `ScormEditorOptions` (the `ScormEditor` config section). | `TryAdd`, `Get`, `Attach`, `Release`, `Remove`, `Options` |
+| `Services/ScormManifest.cs` | Reads `imsmanifest.xml`: SCORM version, default organization's item tree, resources, launch page. | `Parse`, `Items`, `LaunchPath`, `Version`, `CourseTitle` |
+| `Services/ScormPreviewEndpoints.cs` | Minimal-API endpoints for the preview and export. | `MapScormPreview()`: `GET`/`PUT /scorm-preview/{id}/{**path}`, `GET /scorm-export/{id}` |
+| `Services/EditMapper.cs` | The core of "only save what you changed". Turns preview drafts into file changes by finding each edit in the page HTML, in script/JSON data, or in base64 Rise data; also Find and replace and the word-check scan, all working on the same view of the course's text. | `Apply`, `Changes`, `Summarize`, `FindReplace`, `ScanTerms`; records `Edit`, `FileChange`, `Problem`, `Hit`, `TermHit` |
+| `Services/DraftPatcher.cs` | Patches one edited element into a page's HTML source in place, using the text around it to find the right spot. | `Apply`, `ApplyElement` |
+| `Services/TextDiff.cs` | Myers line diff with changed-word highlights, for the review dialog. | `Compare`, `Edits`, `SplitLines` |
+| `Services/TextEncoding.cs` | Detects and keeps a text file's encoding (UTF-8, UTF-16, Shift_JIS, EUC-JP, Windows-1252, ISO-8859-1). | `Decode`, `EncodeLike` |
+| `Services/TermList.cs` | ARR Word Check list: default IFS Academy pairs and parsing of the user's list. | `Default`, `Parse` |
+| `Services/CourseSource.cs` | Where a course came from and how to save it back: Azure (`Sas`, `BlobName`, `ETag`, `ConnectionName`), this computer (`LocalKey`), or another app (`HostSave`, `HostName`); `ReplaceOnly`; `Display` text. | record |
+| `Services/AzureSas.cs` | Reads a SAS URL without calling Azure: account, container, folder or blob, permissions (`sp`), expiry (`se`); error messages for bad URLs; `Redact` hides the signature for display. | `TryParse`, `Allows`, `Missing`, `Expired`, `ContainerUri`, `Display` |
+| `Services/AzureBlobService.cs` | All Azure Blob calls, through SAS URLs only. Never deletes. Never logs SAS URLs; errors are built from status codes. | `ListAsync`, `TestAsync`, `PropertiesAsync`, `DownloadAsync`, `SaveAsync` (`.OLD` + ETag + MD5), `Blob`, `Container`, `Stamp`; `SaveException` |
+| `Services/AzureConnections.cs` | The user's saved containers, stored in the browser with `ProtectedLocalStorage` (encrypted by Data Protection). One instance per tab. Also `OpenRequest` for the Azure page → editor hand-off. | `GetAsync`, `SaveAsync`, `DeleteAsync`, `LoadProblem`, `OpenRequest` |
+| `Services/ScormEditorLauncher.cs` | Hand-off from another page: keeps a blob location or zip bytes + `onSave` under a one-time code for 5 minutes. | `EditorUrl` / `Create` (Azure and bytes overloads), `Take`, `Lifetime` |
+| `Services/AssetVersion.cs` | Adds `?v=<last modified>` to the editor's JS/CSS URLs, so browsers don't run an old cached script against a new page. | `Url` |
+
+### 7.5 Browser side
+
+| File | Purpose | Main exports |
+|---|---|---|
+| `wwwroot/js/scorm-editor.js` | The editor's JavaScript module, loaded by the page. **Code tab:** CodeMirror documents per file, debounced `PUT` saves. **Preview:** loads pages, tracks navigation, Live reload, widths. **Edit mode:** makes the page and its same-origin frames editable, formatting commands, right-click menu (links, embeds, images, buttons, HTML), Ctrl+click navigation, hide-for-learners, yellow highlights, and the drafts list (before/after per element). **Word check:** highlights, tips, next/previous, jump to a place. **LMS stub:** `window.API` and `window.API_1484_11` with a call log. **Local files:** File System Access API open/save, `.OLD` in the folder. **Prefs:** localStorage/sessionStorage. | `init`, `getPrefs`, `setPref`, `setSession`, `setPackage`, `openText`, `flush`, `loadPreview`, `reloadPreview`, `setMode`, `exec`, `getDrafts`, `clearDrafts`, `updateDoc`, `resetEdits`, `download`, `setTerms`, `termsShow`, `termsGo`, `resetLms`, `pickLocalCourse`, `readLocal`, `pickFolder`, `localExists`, `saveLocal` |
+| `wwwroot/css/scorm-editor.css` | All editor styles: toolbar, panels, tabs, review dialog, diff colours, word-check marks, save/open dialogs, simple vs advanced layout. |
+| `wwwroot/css/site.css` | Base app styles. |
+| `wwwroot/lib/codemirror/` | CodeMirror 5: core, `xml`, `javascript`, `css`, `htmlmixed` modes; `matchbrackets`, `xml-fold`, `closetag` addons. |
+| `wwwroot/lib/bootstrap/`, `wwwroot/lib/open-iconic/` | Bootstrap 5 and the icon font (same as the Content Manager). |
+| `wwwroot/favicon.svg` | App icon. |
 
 ## 8. Putting it into another Blazor app, and opening courses from it
 
@@ -440,7 +644,7 @@ var app = builder.Build();
 app.UseStaticFiles();
 app.UseAntiforgery();
 
-app.MapScormPreview();          // GET/PUT /scorm-preview/{id}/{**path}; before MapRazorComponents
+app.MapScormPreview();          // /scorm-preview/{id}/{**path} (GET/PUT) and /scorm-export/{id}; before MapRazorComponents
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
