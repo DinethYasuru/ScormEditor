@@ -45,6 +45,8 @@
 
 ## 2. Public API the host app uses (exact signatures)
 
+Full parameter tables, return values, exceptions and examples: [`API-REFERENCE.md`](API-REFERENCE.md).
+
 ```csharp
 namespace ScormEditor.Services;
 
