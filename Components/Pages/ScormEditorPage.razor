@@ -861,7 +861,12 @@
             if (Launcher.Take(code) is { } launch)
             {
                 (returnUrl, returnLabel) = (launch.ReturnUrl, launch.ReturnLabel);
-                await OpenFromAzure(launch.Sas, launch.BlobName, launch.SourceName, replaceOnly: true);
+                if (launch is { Data: { } zip, OnSave: { } onSave })
+                {
+                    var source = new CourseSource { FileName = launch.FileName!, HostSave = onSave, HostName = launch.SourceName, ReplaceOnly = true };
+                    await OpenCourse(source.FileName, zip.Length, () => Task.FromResult<Stream>(new MemoryStream(zip)), source);
+                }
+                else await OpenFromAzure(launch.Sas!, launch.BlobName!, launch.SourceName, replaceOnly: true);
                 StateHasChanged();
                 return;
             }

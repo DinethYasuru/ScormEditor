@@ -29,10 +29,16 @@ public sealed record CourseSource
     /// </summary>
     public bool ReplaceOnly { get; init; }
 
+    /// <summary>For a course handed over in memory by another page: stores the edited .zip.</summary>
+    public Func<byte[], Task>? HostSave { get; init; }
+    /// <summary>For a course handed over in memory: where it came from, for showing on screen.</summary>
+    public string? HostName { get; init; }
+
     public bool IsAzure => Sas is not null;
 
     /// <summary>Where it is, for showing on screen.</summary>
     public string Display => Sas is { } s
         ? $"{ConnectionName ?? s.Account + "/" + s.Container} › {BlobName}"
+        : HostSave is not null ? $"{HostName ?? "Sent by the app"} › {FileName}"
         : $"This computer › {FileName}";
 }

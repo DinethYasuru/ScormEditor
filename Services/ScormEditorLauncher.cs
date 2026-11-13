@@ -22,8 +22,16 @@ public sealed class ScormEditorLauncher
 {
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(5);
 
-    /// <summary>A course waiting to be opened by the editor.</summary>
-    public sealed record Request(AzureSas Sas, string BlobName, string? SourceName, string? ReturnUrl, string? ReturnLabel, DateTimeOffset Expires);
+    /// <summary>
+    /// A course waiting to be opened by the editor: a blob (Sas and BlobName), or a zip handed over
+    /// in memory (Data, FileName and OnSave).
+    /// </summary>
+    public sealed record Request(AzureSas? Sas, string? BlobName, string? SourceName, string? ReturnUrl, string? ReturnLabel, DateTimeOffset Expires)
+    {
+        public byte[]? Data { get; init; }
+        public string? FileName { get; init; }
+        public Func<byte[], Task>? OnSave { get; init; }
+    }
 
     private readonly ConcurrentDictionary<string, Request> _requests = new();
 
@@ -50,13 +58,46 @@ public sealed class ScormEditorLauncher
         // A folder SAS points into the container; a name without that folder is taken as relative to it.
         if (!sas.IsBlob && sas.Path.Length > 0 && !name.StartsWith(sas.Path, StringComparison.Ordinal)) name = sas.Path + name;
 
+        return Add(new Request(sas, name, sourceName, returnUrl, returnLabel, DateTimeOffset.UtcNow + Lifetime));
+    }
+
+    /// <summary>
+    /// Queues a course .zip handed over in memory and returns its one-time code. When the user saves,
+    /// the editor calls <paramref name="onSave"/> with the whole edited .zip; where it goes is up to
+    /// the caller. If <paramref name="onSave"/> throws, the user sees the error and can save again.
+    /// </summary>
+    /// <param name="zip">The course .zip.</param>
+    /// <param name="fileName">Its file name, such as "intro.zip".</param>
+    /// <param name="onSave">Stores the edited .zip. It runs on the server, in the editor's circuit.</param>
+    /// <param name="sourceName">Shown in the editor as where the course came from, such as "Content Manager".</param>
+    /// <param name="returnUrl">When set, the editor shows a Back button that goes here.</param>
+    /// <param name="returnLabel">The Back button's text; "Back" when left out.</param>
+    public string Create(byte[] zip, string fileName, Func<byte[], Task> onSave, string? sourceName = null, string? returnUrl = null, string? returnLabel = null)
+    {
+        ArgumentNullException.ThrowIfNull(zip);
+        ArgumentNullException.ThrowIfNull(onSave);
+        if (zip.Length == 0) throw new ArgumentException("The course .zip is empty.", nameof(zip));
+        fileName = Path.GetFileName(fileName ?? "");
+        if (fileName.Length == 0) fileName = "course.zip";
+        return Add(new Request(null, null, sourceName, returnUrl, returnLabel, DateTimeOffset.UtcNow + Lifetime)
+        {
+            Data = zip, FileName = fileName, OnSave = onSave,
+        });
+    }
+
+    /// <summary>Queues a course .zip handed over in memory (see <see cref="Create(byte[], string, Func{byte[], Task}, string?, string?, string?)"/>) and returns the editor URL that opens it.</summary>
+    public string EditorUrl(byte[] zip, string fileName, Func<byte[], Task> onSave, string? sourceName = null, string? returnUrl = null, string? returnLabel = null) =>
+        "editor?open=" + Create(zip, fileName, onSave, sourceName, returnUrl, returnLabel);
+
+    private string Add(Request request)
+    {
         Sweep();
         var code = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-        _requests[code] = new Request(sas, name, sourceName, returnUrl, returnLabel, DateTimeOffset.UtcNow + Lifetime);
+        _requests[code] = request;
         return code;
     }
 
-    /// <summary>Queues a course (see <see cref="Create"/>) and returns the editor URL that opens it.</summary>
+    /// <summary>Queues a course in Azure Blob Storage (see <see cref="Create(string, string?, string?, string?, string?)"/>) and returns the editor URL that opens it.</summary>
     public string EditorUrl(string sasUrl, string? blobName = null, string? sourceName = null, string? returnUrl = null, string? returnLabel = null) =>
         "editor?open=" + Create(sasUrl, blobName, sourceName, returnUrl, returnLabel);
 
