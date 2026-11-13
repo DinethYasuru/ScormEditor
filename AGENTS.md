@@ -7,7 +7,9 @@ Start here:
 
 1. **Merging the editor into another app?** Follow [`docs/LLM-MERGE-PLAYBOOK.md`](docs/LLM-MERGE-PLAYBOOK.md)
    step by step. It lists exact files, exact edits, invariants and checks.
-2. **Need to understand how something works?** [`docs/SCORM-Editor-Guide.md`](docs/SCORM-Editor-Guide.md):
+2. **Calling the editor from the host app?** [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md): every method,
+   parameter, return value, exception and example.
+3. **Need to understand how something works?** [`docs/SCORM-Editor-Guide.md`](docs/SCORM-Editor-Guide.md):
    section 6 traces every flow method by method, section 7 describes every file.
 
 Rules that apply to any change in this repo:

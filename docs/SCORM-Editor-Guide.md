@@ -10,6 +10,7 @@ Content Manager.
 
 > **AI agents:** for the merge into another app, follow [`LLM-MERGE-PLAYBOOK.md`](LLM-MERGE-PLAYBOOK.md)
 > (exact steps, invariants and checks). This guide is the reference it cites.
+> **Every method, parameter and example** for connecting another app: [`API-REFERENCE.md`](API-REFERENCE.md).
 
 ## Contents
 
