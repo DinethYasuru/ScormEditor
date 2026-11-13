@@ -1,4 +1,5 @@
 @* What a pasted SAS URL points at and allows, read from the URL. *@
+@namespace ScormEditor.Components.Shared
 <div class="se-az-summary small mb-2">
     <div><span class="text-muted">Points to</span> <strong>@Sas.Display</strong> <span class="text-muted">(@(Sas.IsBlob ? "one file" : Sas.Path.Length > 0 ? "a folder in a container" : "a container"))</span> <ExpiryBadge Sas="Sas" /></div>
     @if (Sas.Permissions is null)

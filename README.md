@@ -2,6 +2,8 @@
 
 A Blazor Server app (.NET 8) for editing SCORM packages, styled to match the IFS Academy Content Manager.
 
+Documentation: [full guide](docs/SCORM-Editor-Guide.md) · [merge playbook for AI agents](docs/LLM-MERGE-PLAYBOOK.md) · [AGENTS.md](AGENTS.md)
+
 ## Run it
 
 ```
