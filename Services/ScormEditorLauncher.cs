@@ -31,11 +31,10 @@ public sealed class ScormEditorLauncher
     /// Queues a course for the editor and returns its one-time code.
     /// </summary>
     /// <param name="sasUrl">
-    /// A SAS URL for the container (or a folder in it) with read, write, create, list and add
-    /// permissions, in which case <paramref name="blobName"/> is the course's full path in the
-    /// container. A container SAS lets "Keep old file" copy the old version into .OLD before saving.
-    /// Or a SAS URL for the course .zip blob itself (read and write), with <paramref name="blobName"/>
-    /// left out; the course can then be saved back, but without the .OLD copy.
+    /// A SAS URL with read and write permissions: for the container (or a folder in it), with
+    /// <paramref name="blobName"/> the course's full path in the container, or for the course .zip
+    /// blob itself, with <paramref name="blobName"/> left out. The editor only ever saves the course
+    /// back over that blob: no .OLD copy, and no saving it to another place.
     /// </param>
     /// <param name="blobName">The course .zip's path in the container, such as "courses/intro.zip".</param>
     /// <param name="sourceName">Shown in the editor as where the course came from, such as "IFS Academy".</param>

@@ -23,6 +23,12 @@ public sealed record CourseSource
     /// <summary>For a file on the user's computer: the key of its handle in the browser (File System Access API).</summary>
     public string? LocalKey { get; init; }
 
+    /// <summary>
+    /// Opened by another page of the app (ScormEditorLauncher): saving only overwrites this blob.
+    /// No .OLD copy and no saving to another place, so the course never ends up as a new file.
+    /// </summary>
+    public bool ReplaceOnly { get; init; }
+
     public bool IsAzure => Sas is not null;
 
     /// <summary>Where it is, for showing on screen.</summary>

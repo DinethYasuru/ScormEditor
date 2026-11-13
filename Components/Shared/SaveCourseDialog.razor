@@ -20,6 +20,8 @@
                         </span>
                     </label>
                 }
+                @if (!ReplaceOnly)
+                {
                 <label class="se-save-option @(dest == Dest.Azure ? "active" : null)">
                     <input type="radio" class="form-check-input" name="se-dest" checked="@(dest == Dest.Azure)" @onchange="() => SetDest(Dest.Azure)" />
                     <span>
@@ -36,6 +38,7 @@
                             <span class="d-block small text-muted">Choose the folder; a file already there can be kept in .OLD.</span>
                         </span>
                     </label>
+                }
                 }
                 <label class="se-save-option @(dest == Dest.Download ? "active" : null)">
                     <input type="radio" class="form-check-input" name="se-dest" checked="@(dest == Dest.Download)" @onchange="() => SetDest(Dest.Download)" />
@@ -96,7 +99,14 @@
                 </div>
             }
 
-            @if (exists == true && dest != Dest.Download)
+            @if (ReplaceOnly && dest == Dest.Source)
+            {
+                <div class="alert alert-warning small py-2 mb-2">
+                    <span class="oi oi-warning me-1" aria-hidden="true"></span>
+                    <strong>Saving replaces @fileName with your changes.</strong> No copy of the old file is kept.
+                </div>
+            }
+            else if (exists == true && dest != Dest.Download)
             {
                 <div class="alert alert-warning small py-2 mb-2">
                     <span class="oi oi-warning me-1" aria-hidden="true"></span>
@@ -163,6 +173,7 @@
     private int checkSeq;
 
     private AzureConnection? Conn => connections?.FirstOrDefault(c => c.Id == connId);
+    private bool ReplaceOnly => Package.Source?.ReplaceOnly == true;
     private bool SourceUsable => Package.Source is { } s && (s.IsAzure || sourceHandle);
     private string BackupExample => $"{Path.GetFileNameWithoutExtension(fileName)}_{AzureBlobService.Stamp(DateTimeOffset.UtcNow, TimeOffset)}{Path.GetExtension(fileName)}";
 
@@ -190,6 +201,7 @@
         if (Package.Source is { LocalKey: { } key })
             sourceHandle = LocalFiles && await Module.InvokeAsync<bool>("hasHandle", key);
         if (SourceUsable) { dest = Dest.Source; exists = true; }
+        if (ReplaceOnly) preserve = false;
     }
 
     private async Task SetDest(Dest next)
@@ -281,6 +293,7 @@
         try
         {
             if (dest == Dest.Source && Package.Source is { IsAzure: true } src) await SaveAzure(src.Sas!, src.BlobName!, src.ConnectionName, stamp, src.ETag);
+            else if (ReplaceOnly) return;
             else if (dest == Dest.Azure) await SaveAzure(Conn!.Sas!, folder + fileName, Conn.Name, stamp, null);
             else await SaveLocal(stamp);
         }
@@ -303,14 +316,14 @@
         var data = Package.ToZip();
         var target = AzureBlobService.Blob(sas, sas.IsBlob ? null : blobName);
         // A SAS for one blob can't create the .OLD copy; use a saved container SAS for the same container.
-        var backupSas = sas.IsBlob
+        var backupSas = ReplaceOnly ? null : sas.IsBlob
             ? connections?.Select(c => c.Sas).FirstOrDefault(s => s is { IsBlob: false } && s.Account == sas.Account && s.Container == sas.Container && blobName.StartsWith(s.Path))
             : sas;
         progress = exists == true && preserve ? "Keeping the old file in .OLD, then saving…" : "Saving…";
         StateHasChanged();
         var result = await Blobs.SaveAsync(target, backupSas is null ? null : AzureBlobService.Container(backupSas), data, preserve,
             changed ? null : expected, allowReplace: exists == true, stamp);
-        Package.Source = new CourseSource { Sas = sas, BlobName = blobName, ETag = result.ETag, ConnectionName = connName, FileName = Path.GetFileName(blobName) };
+        Package.Source = new CourseSource { Sas = sas, BlobName = blobName, ETag = result.ETag, ConnectionName = connName, FileName = Path.GetFileName(blobName), ReplaceOnly = ReplaceOnly && dest == Dest.Source };
         await OnSaved.InvokeAsync(Done(Package.Source.Display, result.Replaced, result.BackupName));
     }
 

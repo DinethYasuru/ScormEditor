@@ -861,7 +861,7 @@
             if (Launcher.Take(code) is { } launch)
             {
                 (returnUrl, returnLabel) = (launch.ReturnUrl, launch.ReturnLabel);
-                await OpenFromAzure(launch.Sas, launch.BlobName, launch.SourceName);
+                await OpenFromAzure(launch.Sas, launch.BlobName, launch.SourceName, replaceOnly: true);
                 StateHasChanged();
                 return;
             }
@@ -991,14 +991,14 @@
         await OpenCourse(opened.Name, opened.Data.Length, () => Task.FromResult<Stream>(new MemoryStream(opened.Data)), opened.Source);
     }
 
-    private async Task OpenFromAzure(AzureSas sas, string blobName, string? connectionName)
+    private async Task OpenFromAzure(AzureSas sas, string blobName, string? connectionName, bool replaceOnly = false)
     {
         loading = true;
         Show($"Opening {Path.GetFileName(blobName)} from Azure…", "info");
         try
         {
             var opened = await Blobs.DownloadAsync(AzureBlobService.Blob(sas, blobName), Store.Options.MaxUploadMB * 1024L * 1024);
-            var source = new CourseSource { Sas = sas, BlobName = blobName, ETag = opened.ETag, ConnectionName = connectionName, FileName = Path.GetFileName(blobName) };
+            var source = new CourseSource { Sas = sas, BlobName = blobName, ETag = opened.ETag, ConnectionName = connectionName, FileName = Path.GetFileName(blobName), ReplaceOnly = replaceOnly };
             await OpenCourse(source.FileName, opened.Data.Length, () => Task.FromResult<Stream>(new MemoryStream(opened.Data)), source);
         }
         catch (AzureBlobService.SaveException ex) { Show(ex.Message, "danger"); }
