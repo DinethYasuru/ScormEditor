@@ -5,6 +5,9 @@ Server). It is being merged into another Blazor app (the IFS Academy Content Man
 
 Start here:
 
+0. **How the host app and the editor work together, end to end:** [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
+   (the full flow from the Edit button back to the host, with every integration point IP1-IP9,
+   and the decisions the host team must make first).
 1. **Merging the editor into another app?** Follow [`docs/LLM-MERGE-PLAYBOOK.md`](docs/LLM-MERGE-PLAYBOOK.md)
    step by step. It lists exact files, exact edits, invariants and checks.
 2. **Calling the editor from the host app?** [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md): every method,
