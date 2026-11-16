@@ -10,6 +10,7 @@ Content Manager.
 
 > **AI agents:** for the merge into another app, follow [`LLM-MERGE-PLAYBOOK.md`](LLM-MERGE-PLAYBOOK.md)
 > (exact steps, invariants and checks). This guide is the reference it cites.
+> **The end-to-end flow with every integration point:** [`INTEGRATION.md`](INTEGRATION.md).
 > **Every method, parameter and example** for connecting another app: [`API-REFERENCE.md`](API-REFERENCE.md).
 
 ## Contents
@@ -914,9 +915,9 @@ example by comparing a version or timestamp you captured before opening and thro
 - **Sign-in.** The `/scorm-preview/{id}/...` endpoints have no sign-in of their own (the id is a
   random GUID). Put the editor page and these endpoints behind your app's sign-in, for example
   `app.MapScormPreview()` inside an authorized route group, and `[Authorize]` on the page.
-- **Site root.** `scorm-editor.js` writes edits to `/scorm-preview/...` from the site root. If your
-  app runs under a sub-path (an IIS virtual directory such as `https://server/academy/`), that path
-  needs a small change in `scorm-editor.js` (`base = \`/scorm-preview/${id}\``) first.
+- **Sub-path.** The editor works when the app runs under a sub-path (an IIS virtual directory such
+  as `https://server/academy/`): `scorm-editor.js` builds its `/scorm-preview` URLs from
+  `<base href>`, so `<base href="/academy/" />` (or `UsePathBase("/academy")`) is all it needs.
 - **Window-wide script.** The editor's script listens for keys, drag and drop and `beforeunload` on
   the whole window while the page is open, and sets `window.API` / `window.API_1484_11` (the SCORM
   LMS stub the preview talks to). Check that nothing else in your app uses those names.
@@ -968,7 +969,7 @@ example by comparing a version or timestamp you captured before opening and thro
 | "This link to open a course has expired or was already used" | Launch code older than 5 minutes or reused. Click Edit again |
 | "The course was not saved: …" (course from another app) | That app's `onSave` threw; the message is its exception message |
 | An edit is listed as "not found" in the review | The text is built in a way the editor can't trace back to a file. Change it in the Code tab (Advanced) |
-| Preview edits don't save under a sub-path site | `scorm-editor.js` posts to `/scorm-preview` from the site root (section 8.7) |
+| Preview blank under a sub-path site | `<base href>` doesn't match the sub-path (it must end with `/`, e.g. `/academy/`) |
 | "Save back to the same file" missing for a local course | Only Chrome/Edge, and not for dragged-in courses |
 
 ## 11. Not built yet

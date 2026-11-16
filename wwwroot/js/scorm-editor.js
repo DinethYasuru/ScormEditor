@@ -111,7 +111,8 @@ function hookPageEvents() {
 }
 
 export function setPackage(id) {
-    base = `/scorm-preview/${id}`;
+    // Relative to <base href>, so the editor also works when the app runs under a sub-path (/academy/).
+    base = new URL(`scorm-preview/${id}`, document.baseURI).pathname;
     docs.clear();
     pending.clear();
     currentPath = "";

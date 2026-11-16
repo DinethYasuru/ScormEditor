@@ -5,6 +5,7 @@
 > **Read this whole file before changing anything.** Then follow the steps in order. Every step
 > has a check. Do not skip checks.
 >
+> End-to-end flow, integration points IP1-IP9 and host decisions: [`docs/INTEGRATION.md`](INTEGRATION.md).
 > Human-oriented reference: [`docs/SCORM-Editor-Guide.md`](SCORM-Editor-Guide.md) (features,
 > step-by-step flows in section 6, every file in section 7). This playbook is self-contained for the
 > merge, and cites guide sections where more detail exists.
@@ -40,8 +41,9 @@
   - `GET  /scorm-export/{id:guid}`: the edited course as `.zip` (download / save to computer).
 - JavaScript module `wwwroot/js/scorm-editor.js` is imported by the page at
   `"./" + AssetVersion.Url("js/scorm-editor.js")`, i.e. relative to `<base href>`.
-- `scorm-editor.js` builds preview URLs as **`/scorm-preview/${id}`** (from the site root,
-  line `base = \`/scorm-preview/${id}\``). See pitfall P3.
+- `scorm-editor.js` builds preview URLs from `<base href>`
+  (`base = new URL(\`scorm-preview/${id}\`, document.baseURI).pathname`), so the editor works
+  under a sub-path as long as `<base href>` is right. See pitfall P3.
 
 ## 2. Public API the host app uses (exact signatures)
 
@@ -101,7 +103,7 @@ Ask only what you cannot find in the host repo:
 
 1. Where do courses live: Azure Blob (which container and how the host gets SAS or keys), or
    somewhere the host reads bytes from (database, file share)? → decides **5A** or **5B**.
-2. Does the host run under a sub-path (IIS virtual directory, `PathBase`)? → pitfall P3.
+2. Does the host run under a sub-path (IIS virtual directory, `PathBase`)? → check `<base href>` (pitfall P3).
 3. Is the host load-balanced across several servers? → pitfall P4.
 4. Should the editor be in the host's menu, or only reachable from Edit buttons?
 5. Should the Azure Blob page (`/azure`) come too? (Default: no.)
@@ -375,7 +377,7 @@ they have asked for it.
 |---|---|---|---|
 | P1 | `CS0246` for `SaveCourseDialog` / `AzureOpenDialog` | Missing `@using ScormEditor.Components.Shared` | Step 3 |
 | P2 | Review dialog never opens on big pages; circuit disconnects | `MaximumReceiveMessageSize` not set | Step 4 |
-| P3 | Preview is blank or edits fail with 404 when the host runs under a sub-path | `scorm-editor.js` uses `/scorm-preview/${id}` from the site root | In `scorm-editor.js` `setPackage`, build `base` from `document.baseURI` (e.g. `new URL("scorm-preview/" + id, document.baseURI).pathname`), then test |
+| P3 | Preview is blank or edits fail with 404 when the host runs under a sub-path | `<base href>` doesn't match the sub-path | Set `<base href="/academy/" />` (with the trailing `/`) in `App.razor`, matching `UsePathBase`/the IIS application path |
 | P4 | Random "course is no longer open" / launch code not found | Several servers behind a load balancer; state is in one server's memory | Sticky sessions (ARR affinity), or one instance |
 | P5 | `onSave` throws `ObjectDisposedException` | `onSave` captured the launching page's scoped `DbContext` | Create a scope inside `onSave` (8B) |
 | P6 | Azure save: "This request is not authorized…" | SAS lacks Write, or expired before the user saved | Read + Write, lifetime ≥ editing session |

@@ -4,6 +4,7 @@ This page lists everything another app (the "host app", such as the Content Mana
 configures to use the SCORM editor, with each method, parameter, return value and error, and
 examples.
 
+- The full flow, stage by stage, with every integration point: [`INTEGRATION.md`](INTEGRATION.md).
 - How to install the editor into the host app: [`LLM-MERGE-PLAYBOOK.md`](LLM-MERGE-PLAYBOOK.md) steps 1-7.
 - How it all works inside: [`SCORM-Editor-Guide.md`](SCORM-Editor-Guide.md) sections 6-7.
 
